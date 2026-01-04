@@ -4,31 +4,25 @@ import cv2
 import face_recognition
 from datetime import datetime
 import os
-from typing import List, Tuple, Dict, Any
+from typing import List, Dict, Any
+from collections import defaultdict
 
 from google_api import google_api
 
 ENCODINGS_FILE = "face_encodings.pkl"
-TRAINING_CACHE = "training_cache"
+
 
 class FaceStore:
     def __init__(self):
-        self.encodings = []
-        self.names = []
-        self.face_ids = []
-        self.person_images = {}  # person_name -> list of image data
-        
-        # Create cache directory
-        os.makedirs(TRAINING_CACHE, exist_ok=True)
-        
-        # Load existing encodings
+        self.encodings: List[np.ndarray] = []
+        self.names: List[str] = []
+        self.face_ids: List[str] = []
+        self.training_people: Dict[str, List[Dict[str, str]]] = {}
+
         self.load_encodings()
-        
-        # Load training data from Google Drive
         self.load_training_data()
-    
+
     def load_encodings(self):
-        """Load known face encodings from disk."""
         if os.path.exists(ENCODINGS_FILE):
             try:
                 with open(ENCODINGS_FILE, "rb") as f:
@@ -36,267 +30,221 @@ class FaceStore:
                     self.encodings = data.get("encodings", [])
                     self.names = data.get("names", [])
                     self.face_ids = data.get("face_ids", [])
-                print(f"✅ Loaded {len(self.encodings)} face encodings from disk")
+                print(f"✅ Loaded {len(self.encodings)} face encodings")
             except Exception as e:
                 print(f"❌ Error loading encodings: {e}")
                 self.encodings, self.names, self.face_ids = [], [], []
         else:
-            print("⚠️ No existing face encodings found. Starting fresh.")
-    
+            print("⚠️ No existing face encodings found")
+
     def save_encodings(self):
-        """Save face encodings to disk."""
-        data = {
-            "encodings": self.encodings,
-            "names": self.names,
-            "face_ids": self.face_ids
-        }
+        data = {"encodings": self.encodings, "names": self.names, "face_ids": self.face_ids}
         with open(ENCODINGS_FILE, "wb") as f:
             pickle.dump(data, f)
-        print(f"💾 Saved {len(self.encodings)} face encodings to disk")
-    
+        print(f"💾 Saved {len(self.encodings)} face encodings")
+
     def load_training_data(self):
-        """Load training data from Google Drive."""
         if not google_api.is_authenticated():
-            print("⚠️ Google API not authenticated, skipping training data load")
+            print("⚠️ Google API not authenticated")
             return
-        
+
         try:
             print("🔄 Loading training data from Google Drive...")
-            
-            # Get all person folders from Person Images
-            person_folders = google_api.list_person_folders()
-            
-            for person in person_folders:
-                person_name = person['name']
-                folder_id = person['id']
-                
-                # Get images for this person
-                images = google_api.list_images_in_folder(folder_id)
-                
-                if images:
-                    self.person_images[person_name] = {
-                        'folder_id': folder_id,
-                        'images': images,
-                        'count': len(images)
-                    }
-                    print(f"  👤 {person_name}: {len(images)} images")
-            
-            print(f"✅ Loaded training data for {len(self.person_images)} people")
-            
+            self.training_people = google_api.list_training_people()
+
+            if not self.training_people:
+                print("⚠️ WARNING: No training people found")
+
+            for person, imgs in self.training_people.items():
+                print(f"  👤 {person}: {len(imgs)} images")
+            print(f"✅ Loaded training data for {len(self.training_people)} people")
+
         except Exception as e:
             print(f"❌ Error loading training data: {e}")
-    
+            self.training_people = {}
+
     def train_from_google_drive(self) -> Dict[str, Any]:
-        """
-        Train face recognition system using images from Google Drive.
-        Downloads images, extracts faces, and creates encodings.
-        """
         if not google_api.is_authenticated():
             return {"success": False, "message": "Google API not authenticated"}
-        
+
         try:
-            print("🎯 Starting face training from Google Drive...")
-            
-            # Reset existing encodings
-            self.encodings = []
-            self.names = []
-            self.face_ids = []
-            
+            self.load_training_data()
+
+            if not self.training_people:
+                return {"success": False, "message": "No training people found in Drive"}
+
+            print("🎯 Starting face training...")
+            self.encodings, self.names, self.face_ids = [], [], []
+
             total_faces = 0
             trained_people = []
-            
-            # Process each person
-            for person_name, person_data in self.person_images.items():
-                print(f"👤 Training: {person_name}")
-                
-                images_downloaded = 0
+
+            for person_name, images in self.training_people.items():
+                print(f"\n👤 Training: {person_name} ({len(images)} images)")
+
+                images_ok = 0
                 faces_found = 0
-                
-                for image_info in person_data['images']:
+
+                for idx, image_info in enumerate(images):
                     try:
-                        # Download image from Google Drive
-                        image_bytes = google_api.download_image(image_info['id'])
-                        if not image_bytes:
-                            continue
+                        print(f"  📸 [{idx+1}/{len(images)}] {image_info.get('name', '?')}")
                         
-                        # Convert to numpy array
+                        image_bytes = google_api.download_image(image_info["id"])
+                        if not image_bytes:
+                            print(f"     ❌ Failed to download")
+                            continue
+
                         nparr = np.frombuffer(image_bytes, np.uint8)
                         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        
                         if image is None:
-                            print(f"  ⚠️ Failed to decode image: {image_info['name']}")
+                            print(f"     ❌ Failed to decode")
                             continue
-                        
-                        # Convert BGR to RGB for face_recognition
-                        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                        
-                        # Detect faces (use CNN if GPU available)
-                        model = "hog"  # Default for CPU
-                        face_locations = face_recognition.face_locations(rgb_image, model=model)
-                        
+
+                        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+                        # hog is faster; cnn is more accurate but slow without GPU
+                        face_locations = face_recognition.face_locations(rgb, model="hog")
                         if not face_locations:
-                            print(f"  ⚠️ No faces found in: {image_info['name']}")
+                            print(f"     ❌ No faces found")
                             continue
-                        
-                        # Get face encodings
-                        face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
-                        
-                        # Add each face encoding
-                        for face_encoding in face_encodings:
-                            self.encodings.append(face_encoding)
+
+                        # ✅ Better stability
+                        face_encs = face_recognition.face_encodings(
+                            rgb,
+                            face_locations,
+                            num_jitters=2,
+                            model="small"
+                        )
+
+                        for enc in face_encs:
+                            self.encodings.append(enc)
                             self.names.append(person_name)
                             self.face_ids.append(f"train_{datetime.now().timestamp()}")
                             faces_found += 1
-                        
-                        images_downloaded += 1
-                        
-                        print(f"  ✅ {image_info['name']}: {len(face_encodings)} face(s)")
-                        
+
+                        images_ok += 1
+                        print(f"     ✅ Found {len(face_encs)} face(s)")
+
                     except Exception as e:
-                        print(f"  ❌ Error processing {image_info['name']}: {e}")
+                        print(f"     ❌ Error: {e}")
                         continue
-                
+
                 if faces_found > 0:
-                    trained_people.append({
-                        'name': person_name,
-                        'images': images_downloaded,
-                        'faces': faces_found
-                    })
+                    trained_people.append({"name": person_name, "images": images_ok, "faces": faces_found})
                     total_faces += faces_found
-            
-            # Save encodings to disk
+                    print(f"  ✅ {person_name}: {faces_found} face(s) trained")
+                else:
+                    print(f"  ⚠️ {person_name}: No faces trained")
+
             if total_faces > 0:
                 self.save_encodings()
+                msg = f"Trained {total_faces} faces for {len(trained_people)} people"
+                print(f"✅ Training completed: {msg}")
                 
-                result = {
-                    "success": True,
-                    "message": f"Trained {total_faces} faces for {len(trained_people)} people",
-                    "data": {
-                        "total_faces": total_faces,
-                        "people_trained": len(trained_people),
-                        "details": trained_people
-                    }
-                }
+                if os.path.exists(ENCODINGS_FILE):
+                    print(f"💾 Saved to: {ENCODINGS_FILE} ({os.path.getsize(ENCODINGS_FILE)} bytes)")
+                else:
+                    print(f"❌ ERROR: {ENCODINGS_FILE} not created!")
                 
-                print(f"✅ Training completed: {total_faces} faces for {len(trained_people)} people")
-                return result
-            else:
-                return {
-                    "success": False,
-                    "message": "No faces found in training images"
-                }
-            
+                return {"success": True, "message": msg, "data": {"total_faces": total_faces, "people_trained": len(trained_people)}}
+
+            return {"success": False, "message": "No faces found in training images"}
+
         except Exception as e:
             print(f"❌ Training failed: {e}")
-            return {
-                "success": False,
-                "message": f"Training failed: {str(e)}"
-            }
-    
-    def recognize_faces(self, rgb_frame: np.ndarray, tolerance: float = 0.5, model: str = "hog") -> List[Tuple[str, Tuple[int, int, int, int], float]]:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": f"Training failed: {str(e)}"}
+
+    @staticmethod
+    def _distance_to_conf(distance: float, tolerance: float) -> float:
         """
-        Detect and recognize faces in an RGB frame.
-        Returns list of (name, (left, top, right, bottom), confidence)
-        model: "hog" for CPU (faster), "cnn" for GPU (more accurate)
+        Confidence normalized around tolerance:
+        - distance == 0 -> 1.0
+        - distance == tolerance -> ~0.5
+        - distance > tolerance -> < 0.5
         """
+        if tolerance <= 0:
+            return 0.0
+        conf = 1.0 - (distance / (tolerance * 2.0))
+        return float(max(0.0, min(1.0, conf)))
+
+    def recognize_faces(
+        self,
+        rgb_frame: np.ndarray,
+        tolerance: float = 0.50,  # Increased default tolerance for CCTV
+        model: str = "hog",
+        top_k: int = 6
+    ) -> List[Dict[str, Any]]:
         try:
-            # 1) Detect face locations first
             face_locations = face_recognition.face_locations(rgb_frame, model=model)
             if not face_locations:
                 return []
 
-            # 2) Get encodings for detected faces
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-            
-            # 3) If no known encodings exist, return all as "Unknown"
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations, num_jitters=1, model="small")
+
             if not self.encodings:
-                return [("Unknown", (left, top, right, bottom), 0.0)
-                        for (top, right, bottom, left) in face_locations]
-            
-            results: List[Tuple[str, Tuple[int, int, int, int], float]] = []
+                return [{
+                    "name": "Unknown",
+                    "location": (left, top, right, bottom),
+                    "confidence": 0.0,
+                    "is_known": False
+                } for (top, right, bottom, left) in face_locations]
+
+            known_encs = np.array(self.encodings)
+
+            results: List[Dict[str, Any]] = []
+            eps = 1e-6
 
             for face_encoding, (top, right, bottom, left) in zip(face_encodings, face_locations):
-                # Compare with known encodings
-                face_distances = face_recognition.face_distance(self.encodings, face_encoding)
-                
-                if len(face_distances) == 0:
-                    results.append(("Unknown", (left, top, right, bottom), 0.0))
+                distances = face_recognition.face_distance(known_encs, face_encoding)
+
+                # top-k nearest
+                idxs = np.argsort(distances)[:max(1, top_k)]
+                nearest = [(int(i), float(distances[i])) for i in idxs]
+
+                # keep only those within tolerance
+                inliers = [(i, d) for (i, d) in nearest if d <= tolerance]
+
+                if not inliers:
+                    results.append({
+                        "name": "Unknown",
+                        "location": (left, top, right, bottom),
+                        "confidence": 0.0,
+                        "is_known": False,
+                        "distance": float(nearest[0][1]) if nearest else 1.0
+                    })
                     continue
-                
-                best_match_index = int(np.argmin(face_distances))
-                best_distance = float(face_distances[best_match_index])
 
-                if best_distance <= tolerance:
-                    name = self.names[best_match_index]
-                    confidence = 1.0 - best_distance
-                else:
-                    name = "Unknown"
-                    confidence = 0.0
+                # weighted vote
+                votes = defaultdict(float)
+                for i, d in inliers:
+                    votes[self.names[i]] += 1.0 / (d + eps)
 
-                results.append((name, (left, top, right, bottom), confidence))
+                best_name = max(votes.items(), key=lambda x: x[1])[0]
+                best_dist = min(d for (i, d) in inliers if self.names[i] == best_name)
+
+                results.append({
+                    "name": best_name,
+                    "location": (left, top, right, bottom),
+                    "confidence": self._distance_to_conf(best_dist, tolerance),
+                    "is_known": True,
+                    "distance": best_dist
+                })
 
             return results
 
         except Exception as e:
-            print(f"❌ Error in face recognition: {e}")
+            print(f"❌ Recognition error: {e}")
             return []
-    
-    def retrain_after_capture(self):
-        """Automatically retrain after new face capture."""
-        print("🔄 Retraining after new face capture...")
-        self.load_training_data()
-        result = self.train_from_google_drive()
-        if result.get("success"):
-            print("✅ Retraining completed successfully")
-        else:
-            print("⚠️ Retraining had issues:", result.get("message"))
-    
-    def get_all_people(self) -> List[str]:
-        """Get list of all unique people names."""
-        return sorted(set(self.names))
-    
+
     def get_training_status(self) -> Dict[str, Any]:
-        """Get training status and statistics."""
         return {
             "encodings_count": len(self.encodings),
             "unique_people": len(set(self.names)),
-            "people_list": self.get_all_people(),
-            "training_data": {
-                "people_in_drive": len(self.person_images),
-                "people_details": list(self.person_images.keys())
-            }
+            "people_list": sorted(set(self.names)),
+            "drive_training_people": sorted(list(self.training_people.keys())) if self.training_people else [],
         }
-    
-    def add_person_manual(self, name: str, image_paths: List[str]) -> int:
-        """Manually add a person with local images (for testing)."""
-        added = 0
-        
-        for path in image_paths:
-            try:
-                # Load image
-                image = face_recognition.load_image_file(path)
-                
-                # Detect faces
-                face_locations = face_recognition.face_locations(image, model="hog")
-                if not face_locations:
-                    continue
-                
-                # Get encodings
-                face_encodings = face_recognition.face_encodings(image, face_locations)
-                
-                for face_encoding in face_encodings:
-                    self.encodings.append(face_encoding)
-                    self.names.append(name)
-                    self.face_ids.append(f"manual_{datetime.now().timestamp()}")
-                    added += 1
-                    
-            except Exception as e:
-                print(f"Error processing {path}: {e}")
-        
-        if added > 0:
-            self.save_encodings()
-        
-        return added
 
-# Global instance
+
 face_store = FaceStore()

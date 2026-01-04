@@ -5,7 +5,7 @@ const API_BASE = "http://localhost:8000";
 const CameraForm = ({ onSave, onCancel, initialData = null, onTestSuccess }) => {
   const [formData, setFormData] = useState({
     name: "",
-    ip: "192.168.",
+    ip: "",
     username: "",
     password: "",
     port: "554", // Default RTSP port
@@ -20,7 +20,7 @@ const CameraForm = ({ onSave, onCancel, initialData = null, onTestSuccess }) => 
     if (initialData) {
       setFormData({
         name: initialData.name || "",
-        ip: initialData.ip || "192.168.",
+        ip: initialData.ip || "",
         username: initialData.username || "",
         password: initialData.password || "",
         port: initialData.port || "554",
@@ -29,7 +29,7 @@ const CameraForm = ({ onSave, onCancel, initialData = null, onTestSuccess }) => 
     } else {
       setFormData({
         name: "",
-        ip: "192.168.",
+        ip: "",
         username: "",
         password: "",
         port: "554",
@@ -175,7 +175,7 @@ const CameraForm = ({ onSave, onCancel, initialData = null, onTestSuccess }) => 
           name="ip"
           value={formData.ip}
           onChange={handleChange}
-          placeholder="192.168.150.108"
+          placeholder="Enter camera ip"
           required
         />
       </div>
@@ -187,6 +187,7 @@ const CameraForm = ({ onSave, onCancel, initialData = null, onTestSuccess }) => 
           name="username"
           value={formData.username}
           onChange={handleChange}
+          placeholder="Enter camera username"
           required
         />
       </div>
@@ -225,11 +226,9 @@ const CameraForm = ({ onSave, onCancel, initialData = null, onTestSuccess }) => 
           style={{ backgroundColor: "#f9f9f9" }}
         />
         <div style={{ fontSize: "12px", color: "#666", marginTop: "4px" }}>
-          Standard RTSP port is 554. Port 8000 is for this web server.
         </div>
         {formData.port === "8000" && (
           <div style={{ color: "orange", fontSize: "12px", marginTop: "4px" }}>
-            ⚠️ Warning: Port 8000 is typically for web servers, not cameras.
           </div>
         )}
       </div>

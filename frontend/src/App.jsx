@@ -77,6 +77,9 @@ const AuthenticatedApp = () => {
 
   const handleStartFeed = async (camera) => {
     try {
+      // ✅ Sanitize camera name for file system and Drive
+      const safeCameraName = camera.name.replace(/[\/\\]/g, "_").trim();
+
       // Stop any existing preview
       if (activeStreamId) {
         await fetch(`${API_BASE}/stop-feed`, {
@@ -92,6 +95,7 @@ const AuthenticatedApp = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cameraId: camera.id,
+          cameraName: safeCameraName, // ✅ CRITICAL: Added camera name
           rtspUrl: camera.rtspUrl,
         }),
       });
@@ -110,11 +114,11 @@ const AuthenticatedApp = () => {
         setPreviewCamera(camera);
         setIsPreviewLive(true);
       } else {
-        alert("Failed to start camera feed");
+        alert("Failed to start camera feed: " + (data.message || "Unknown error"));
       }
     } catch (error) {
       console.error("Error starting feed:", error);
-      alert("Error starting camera feed");
+      alert("Error starting camera feed: " + error.message);
     }
   };
 
@@ -187,6 +191,14 @@ const AuthenticatedApp = () => {
   // New function to handle test success
   const handleTestSuccess = async (cameraConfig, streamId) => {
     try {
+      // ✅ Sanitize camera name for file system and Drive
+      const safeCameraName = cameraConfig.name.replace(/[\/\\]/g, "_").trim();
+      
+      const sanitizedConfig = {
+        ...cameraConfig,
+        name: safeCameraName,
+      };
+
       // Stop any existing preview
       if (activeStreamId) {
         await fetch(`${API_BASE}/stop-feed`, {
@@ -198,8 +210,9 @@ const AuthenticatedApp = () => {
 
       // Save camera config that passed validation
       const tempCamera = {
-        ...cameraConfig,
+        ...sanitizedConfig,
         id: streamId || Date.now(),
+        isLive: true, // ✅ IMPORTANT: Mark as live for consistent state
       };
       
       setPreviewCamera(tempCamera);
