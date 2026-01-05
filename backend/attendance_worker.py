@@ -12,7 +12,7 @@ import json
 from face_store import face_store
 from google_api import google_api
 
-# 🔥 Enhanced FFmpeg options with timeouts
+# 🔥 Enhanced FFmpeg options
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|"
     "fflags;nobuffer|"
@@ -24,19 +24,19 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
 
 
 class AttendanceWorker:
-    """🔥 FINAL VERSION: Google Sheets clickable links WORKING"""
+    """🔥 ARCFACE VERSION: Optimized for CCTV"""
     
     def __init__(self, camera_id: int, camera_name: str, rtsp_url: str):
         self.camera_id = camera_id
         self.camera_name = (camera_name or f"Camera_{camera_id}").strip() or f"Camera_{camera_id}"
         self.rtsp_url = urllib.parse.unquote(rtsp_url)
         
-        # 🔥 CRITICAL: BASE_URL must be your server IP, NOT localhost
+        # 🔥 FIXED: Always use environment variable
         self.base_url = os.environ.get("BASE_URL", "http://localhost:8000")
         if "localhost" in self.base_url or "127.0.0.1" in self.base_url:
             print(f"⚠️  WARNING: BASE_URL is set to {self.base_url}")
             print(f"   Google Sheets links will NOT work from other devices!")
-            print(f"   Run: export BASE_URL=http://YOUR_SERVER_IP:8000")
+            print(f"   Set with: export BASE_URL=http://YOUR_SERVER_IP:8000")
         
         self.running = False
         self.stop_event = threading.Event()
@@ -48,7 +48,7 @@ class AttendanceWorker:
 
         self.raw_frame: Optional[np.ndarray] = None
         self.stream_frame: Optional[np.ndarray] = None
-        self.recognition_queue = deque(maxlen=4)
+        self.recognition_queue = deque(maxlen=3)  # Reduced for performance
         
         self.raw_lock = threading.Lock()
         self.stream_lock = threading.Lock()
@@ -58,35 +58,39 @@ class AttendanceWorker:
         self.video_writer: Optional[cv2.VideoWriter] = None
         self.local_video_path: Optional[str] = None
 
-        self.attendance_log: Dict[str, datetime] = {}  # Only for known people
-        self.capture_log: Dict[str, datetime] = {}     # For all faces
+        self.attendance_log: Dict[str, datetime] = {}
+        self.capture_log: Dict[str, datetime] = {}
         
         self.cooldown_seconds = 30
         self.capture_cooldown_seconds = 5
 
+        # 🔥 FIXED: Load config with fallback
         self.load_optimal_config()
         
         self.stream_width = 960
         self.stream_fps = 15
         
+        # Tracking
         self.active_tracks: Dict[str, Dict] = {}
         self.track_id_counter = 0
         self.track_timeout = 0.9
         self.iou_threshold = 0.3
-        self.min_track_age_for_logging = 1.2
+        self.min_track_age_for_logging = 1.5  # Increased for stability
         
+        # Performance metrics
         self.fps = 0.0
         self.frame_count = 0
         self.recognition_fps = 0.0
         self.recognition_count = 0
         self.start_time = None
         
+        # Accuracy tracking
         self.false_unknown_count = 0
         self.correct_recognition_count = 0
         self.total_recognition_count = 0
         self.genuine_unknown_count = 0
 
-        # 🔥 Base directories
+        # Directories
         self.video_base_dir = "AI Attendance Videos"
         self.captured_base_dir = "Captured Images"
         
@@ -98,42 +102,63 @@ class AttendanceWorker:
         os.makedirs(self.captured_unknown_dir, exist_ok=True)
 
         self.rtsp_failure_count = 0
-        self.max_rtsp_failures = 50
+        self.max_rtsp_failures = 30  # Reduced
         self.last_frame_time = time.time()
 
         print(f"🎥 Initialized camera: {self.camera_name}")
         print(f"   📁 Known faces → {self.captured_known_dir}")
         print(f"   📁 Unknown faces → {self.captured_unknown_dir}")
         print(f"   🔗 Base URL → {self.base_url}")
+        print(f"   🧠 Using: ArcFace (InsightFace)")
+        print(f"   ⚙️ Config: tolerance={self.tolerance}, interval={self.recognition_interval_sec}s")
 
     def load_optimal_config(self):
-        """Load configuration"""
+        """Load or create optimal configuration"""
         config_file = "optimal_config.json"
         
         try:
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-            
-            self.tolerance = config.get('tolerance', 0.54)
-            self.downscale_factor = config.get('downscale_factor', 0.33)
-            self.recognition_interval_sec = config.get('recognition_interval', 0.75)
-            self.num_jitters = config.get('num_jitters', 1)
-            self.top_k = config.get('top_k', 5)
-            
-            print(f"✅ Loaded optimal config from {config_file}")
-            
-        except FileNotFoundError:
-            self.tolerance = 0.54
-            self.downscale_factor = 0.33
-            self.recognition_interval_sec = 0.75
-            self.num_jitters = 1
-            self.top_k = 5
-            
-            print(f"⚠️ Using default config (no {config_file} found)")
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                
+                self.tolerance = config.get('tolerance', 0.47)
+                self.downscale_factor = config.get('downscale_factor', 0.35)
+                self.recognition_interval_sec = config.get('recognition_interval', 0.8)
+                self.num_jitters = config.get('num_jitters', 0)
+                self.top_k = config.get('top_k', 1)
+                
+                print(f"✅ Loaded config from {config_file}")
+            else:
+                # 🔥 Create default config for CCTV
+                default_config = {
+                    "tolerance": 0.47,
+                    "downscale_factor": 0.35,
+                    "recognition_interval": 0.8,
+                    "num_jitters": 0,
+                    "top_k": 1
+                }
+                with open(config_file, 'w') as f:
+                    json.dump(default_config, f, indent=4)
+                
+                self.tolerance = 0.47
+                self.downscale_factor = 0.35
+                self.recognition_interval_sec = 0.8
+                self.num_jitters = 0
+                self.top_k = 1
+                
+                print(f"📝 Created default config at {config_file}")
+                
+        except Exception as e:
+            print(f"⚠️ Config error, using defaults: {e}")
+            # 🔥 CCTV-optimized defaults
+            self.tolerance = 0.47
+            self.downscale_factor = 0.35
+            self.recognition_interval_sec = 0.8
+            self.num_jitters = 0
+            self.top_k = 1
         
         self.recognition_fps_target = 1.0 / self.recognition_interval_sec
-        self.use_cnn_model = False
-        print("ℹ️  Using HOG model (CPU-safe for CCTV)")
+        print(f"ℹ️ Recognition interval: {self.recognition_interval_sec}s ({self.recognition_fps_target:.1f} FPS)")
 
     def start(self):
         if self.running:
@@ -151,7 +176,7 @@ class AttendanceWorker:
         self.recognition_thread.start()
         self.adaptive_thread.start()
         
-        print(f"🚀 Started worker: {self.camera_name}")
+        print(f"🚀 Started worker: {self.camera_name} (ArcFace)")
         return True
 
     def stop(self):
@@ -215,16 +240,18 @@ class AttendanceWorker:
             "people_tracked": len(self.attendance_log),
             "active_tracks": len(self.active_tracks),
             "uptime_seconds": round(elapsed, 1) if elapsed else 0,
-            "model": "cnn" if self.use_cnn_model else "hog",
+            "model": "arcface",
             "tolerance": self.tolerance,
+            "recognition_interval": self.recognition_interval_sec,
             "accuracy": round(accuracy, 1),
             "false_unknown_rate": round(false_unknown_rate, 1),
             "captures_saved": len(self.capture_log),
-            "version": "production_v9_final"
+            "version": "production_v11_arcface"
         }
 
     def _rtsp_capture_loop(self):
         """THREAD 1: RTSP capture"""
+        print(f"📹 Connecting to RTSP: {self.camera_name}")
         self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
 
         try:
@@ -238,6 +265,7 @@ class AttendanceWorker:
             self.running = False
             return
 
+        # Skip initial buffered frames
         for _ in range(10):
             self.cap.grab()
 
@@ -245,7 +273,7 @@ class AttendanceWorker:
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
 
-        print(f"📹 RTSP: {width}x{height} @ {fps} FPS")
+        print(f"📹 RTSP Connected: {width}x{height} @ {fps} FPS")
         self._start_video_recording(width, height, fps)
 
         self.start_time = time.time()
@@ -262,7 +290,7 @@ class AttendanceWorker:
                     print(f"⚠️ RTSP stalled - Reconnecting...")
                     try:
                         self.cap.release()
-                        time.sleep(1)
+                        time.sleep(2)
                         self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
                         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         for _ in range(5):
@@ -273,14 +301,14 @@ class AttendanceWorker:
                         print(f"❌ Reconnect failed: {e}")
                         break
                 
-                time.sleep(0.01)
+                time.sleep(0.02)
                 continue
 
             self.rtsp_failure_count = 0
             
             ret, frame = self.cap.retrieve()
             if not ret or frame is None:
-                time.sleep(0.01)
+                time.sleep(0.02)
                 continue
 
             now = time.time()
@@ -296,10 +324,12 @@ class AttendanceWorker:
                     except:
                         pass
 
+            # 🔥 FIX 4: Send frame for recognition at controlled interval (FIXED QUEUE)
             if (now - last_recognition_send) >= self.recognition_interval_sec:
                 with self.recognition_lock:
-                    self.recognition_queue.clear()
-                    self.recognition_queue.append(frame.copy())
+                    # 🔥 Do NOT clear queue (prevents freeze)
+                    if len(self.recognition_queue) < self.recognition_queue.maxlen:
+                        self.recognition_queue.append(frame.copy())
                 last_recognition_send = now
 
             self.frame_count += 1
@@ -342,7 +372,8 @@ class AttendanceWorker:
                     continue
                 frame = self.raw_frame.copy()
 
-            if (now - self.last_frame_time) > 2.0:
+            # Show warning if stream is frozen
+            if (now - self.last_frame_time) > 3.0:
                 cv2.putText(frame, "RECONNECTING...", (50, 50),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
 
@@ -357,8 +388,8 @@ class AttendanceWorker:
         print(f"🧹 Stream thread stopped: {self.camera_name}")
 
     def _recognition_loop(self):
-        """THREAD 3: Face recognition"""
-        print(f"🧠 Recognition thread started")
+        """THREAD 3: Face recognition (ArcFace)"""
+        print(f"🧠 ArcFace recognition thread started")
         
         recognition_count_fps = 0
         last_fps_calc = time.time()
@@ -373,7 +404,7 @@ class AttendanceWorker:
                 time.sleep(0.05)
                 continue
 
-            self._process_faces(frame_to_process)
+            self._process_faces_arcface(frame_to_process)
             
             self.recognition_count += 1
             recognition_count_fps += 1
@@ -388,7 +419,7 @@ class AttendanceWorker:
         print(f"🧹 Recognition thread stopped: {self.camera_name}")
 
     def _adaptive_control_loop(self):
-        """THREAD 4: Adaptive control"""
+        """THREAD 4: Adaptive control for ArcFace"""
         print(f"🎮 Adaptive control thread started")
         
         check_interval = 10
@@ -399,22 +430,34 @@ class AttendanceWorker:
             try:
                 fps = self.fps
                 
-                if fps < 10 and self.use_cnn_model:
-                    self.use_cnn_model = False
-                    print(f"⚡ Adaptive: FPS low ({fps:.1f}) → Switched to HOG")
+                # Adjust recognition interval based on FPS
+                if fps < 10:
+                    self.recognition_interval_sec = min(1.2, self.recognition_interval_sec + 0.1)
+                    print(f"⚡ Adaptive: FPS low ({fps:.1f}) → Increased interval to {self.recognition_interval_sec:.2f}s")
                 
-                elif fps > 22 and not self.use_cnn_model:
-                    self.use_cnn_model = True
-                    print(f"⚡ Adaptive: FPS excellent ({fps:.1f}) → Switched to CNN")
+                elif fps > 20 and self.recognition_interval_sec > 0.5:
+                    self.recognition_interval_sec = max(0.5, self.recognition_interval_sec - 0.05)
+                    print(f"⚡ Adaptive: FPS good ({fps:.1f}) → Decreased interval to {self.recognition_interval_sec:.2f}s")
+                
+                # Save updated config
+                try:
+                    with open("optimal_config.json", "r") as f:
+                        config = json.load(f)
+                    config["recognition_interval"] = self.recognition_interval_sec
+                    with open("optimal_config.json", "w") as f:
+                        json.dump(config, f, indent=4)
+                except:
+                    pass
                 
             except Exception as e:
                 print(f"❌ Adaptive control error: {e}")
         
         print(f"🧹 Adaptive control thread stopped: {self.camera_name}")
 
-    def _process_faces(self, frame: np.ndarray):
-        """Face recognition"""
+    def _process_faces_arcface(self, frame: np.ndarray):
+        """Face recognition using ArcFace"""
         try:
+            # Resize for faster processing
             small = cv2.resize(
                 frame, (0, 0),
                 fx=self.downscale_factor,
@@ -423,14 +466,10 @@ class AttendanceWorker:
             )
             rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-            model = "cnn" if self.use_cnn_model else "hog"
-            
+            # 🔥 ARCFACE RECOGNITION
             faces = face_store.recognize_faces(
-                rgb_small, 
-                tolerance=self.tolerance, 
-                model=model,
-                top_k=self.top_k,
-                num_jitters=self.num_jitters
+                rgb_small,
+                tolerance=self.tolerance
             )
 
             if not faces:
@@ -445,7 +484,12 @@ class AttendanceWorker:
                 top, right, bottom, left = face["location"]
                 is_known = face["is_known"]
                 conf = float(face.get("confidence", 0.0))
+                
+                # 🔒 FIX 1: STRICT CONFIDENCE FILTER (prevents ear / side-face detection)
+                if conf < 0.55:
+                    continue
 
+                # Scale bounding box back to original size
                 face_bbox = (
                     int(left * scale),
                     int(top * scale),
@@ -453,15 +497,18 @@ class AttendanceWorker:
                     int(bottom * scale)
                 )
                 
+                # 🔒 FIX 2: Minimum face size for CCTV (prevents false captures)
                 fw = face_bbox[2] - face_bbox[0]
                 fh = face_bbox[3] - face_bbox[1]
                 
-                if fw < 60 or fh < 60:
+                if fw < 70 or fh < 70:  # Increased from 45
                     continue
                 
-                aspect_ratio = fw / float(fh)
-                if aspect_ratio < 0.6 or aspect_ratio > 1.6:
-                    continue
+                # Basic aspect ratio check
+                if fw > 0 and fh > 0:
+                    aspect_ratio = fw / float(fh)
+                    if aspect_ratio < 0.5 or aspect_ratio > 1.8:
+                        continue
 
                 canonical_bbox = self._expand_bbox_for_capture(face_bbox, frame.shape)
                 
@@ -474,15 +521,15 @@ class AttendanceWorker:
                 })
                 
                 self.total_recognition_count += 1
-                if is_known:
+                if is_known and name != "Unknown":
                     self.correct_recognition_count += 1
-                else:
+                elif not is_known:
                     self.genuine_unknown_count += 1
 
             self._update_tracks(new_detections, frame, current_time)
 
         except Exception as e:
-            print(f"❌ Recognition error: {e}")
+            print(f"❌ ArcFace recognition error: {e}")
 
     def _expand_bbox_for_capture(self, face_bbox: Tuple[int, int, int, int], frame_shape: Tuple[int, int]) -> Tuple[int, int, int, int]:
         left, top, right, bottom = face_bbox
@@ -491,9 +538,10 @@ class AttendanceWorker:
         face_w = right - left
         face_h = bottom - top
 
-        expand_top = int(face_h * 0.55)
-        expand_bottom = int(face_h * 0.85)
-        expand_side = int(face_w * 0.45)
+        # 🔥 FIX 3: Expand bbox to include full head + neck
+        expand_top = int(face_h * 0.7)      # Increased from 0.5
+        expand_bottom = int(face_h * 0.9)   # Increased from 0.8
+        expand_side = int(face_w * 0.45)    # Increased from 0.4
 
         new_left = max(0, left - expand_side)
         new_right = min(w, right + expand_side)
@@ -523,6 +571,7 @@ class AttendanceWorker:
     def _update_tracks(self, detections: List[Dict], frame: np.ndarray, current_time: float):
         """Track and capture faces"""
         
+        # Remove old tracks
         to_remove = []
         for track_id, track in self.active_tracks.items():
             if (current_time - track['last_seen']) > self.track_timeout:
@@ -534,6 +583,7 @@ class AttendanceWorker:
         matched_tracks = set()
         matched_detections = set()
 
+        # Match detections to existing tracks
         for det_idx, detection in enumerate(detections):
             best_iou = 0
             best_track_id = None
@@ -567,6 +617,7 @@ class AttendanceWorker:
                 matched_detections.add(det_idx)
                 
             else:
+                # Create new track
                 self.track_id_counter += 1
                 track_id = f"track_{self.track_id_counter}"
                 
@@ -583,6 +634,7 @@ class AttendanceWorker:
                 
                 matched_detections.add(det_idx)
 
+        # Process logging for mature tracks
         for track_id, track in self.active_tracks.items():
             if track.get("logged"):
                 continue
@@ -593,10 +645,11 @@ class AttendanceWorker:
 
             name = track["name"]
             is_known = track["is_known"]
+            confidence = track.get("confidence", 0.0)
 
             if is_known:
                 last_recognized = track.get("last_recognized")
-                if not last_recognized or (current_time - last_recognized) > 0.8:
+                if not last_recognized or (current_time - last_recognized) > 1.0:
                     track["logged"] = True
                     continue
 
@@ -609,28 +662,41 @@ class AttendanceWorker:
                 continue
 
             left, top, right, bottom = track["bbox"]
+            # Ensure bounding box is valid
+            if right <= left or bottom <= top:
+                track["logged"] = True
+                continue
+                
             face_crop = frame[top:bottom, left:right]
             
-            if face_crop.size <= 0:
+            # 🔒 FIX 5: Reject invalid crops
+            if face_crop is None or face_crop.size == 0:
+                track["logged"] = True
+                continue
+                
+            if face_crop.shape[0] < 50 or face_crop.shape[1] < 50:
                 track["logged"] = True
                 continue
 
-            # 🔥 CRITICAL: Save image AND get clickable URL
+            # 🔥 Save image and get clickable URL
             image_url = self._save_captured_face(name, face_crop, is_known=is_known)
             self.capture_log[capture_key] = now_dt
             
-            print(f"📸 Captured: {name} ({'Known' if is_known else 'Unknown'})")
-
             if is_known:
+                print(f"📸 Captured KNOWN: {name} ({confidence:.2f})")
+                
+                # Log attendance
                 last_seen = self.attendance_log.get(name)
                 if not last_seen or (now_dt - last_seen).total_seconds() >= self.cooldown_seconds:
                     self.attendance_log[name] = now_dt
                     self._log_attendance(name, image_url)
+            else:
+                print(f"📸 Captured UNKNOWN: {name}")
 
             track["logged"] = True
 
     def _draw_tracks(self, frame: np.ndarray) -> np.ndarray:
-        """Draw bounding boxes"""
+        """Draw bounding boxes and labels"""
         current_time = time.time()
         
         for track_id, track in list(self.active_tracks.items()):
@@ -639,14 +705,20 @@ class AttendanceWorker:
             
             name = track['name']
             is_known = track['is_known']
-            confidence = track['confidence']
+            confidence = track.get('confidence', 0.0)
             left, top, right, bottom = track['bbox']
             
+            # Draw bounding box
             color = (0, 255, 0) if is_known else (0, 0, 255)
+            thickness = 2
             
-            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+            cv2.rectangle(frame, (left, top), (right, bottom), color, thickness)
             
-            label = f"{name} ({confidence:.2f})" if is_known else "Unknown"
+            # Prepare label
+            if is_known:
+                label = f"{name} ({confidence:.2f})"
+            else:
+                label = "Unknown"
             
             font = cv2.FONT_HERSHEY_SIMPLEX
             scale = 0.7
@@ -654,12 +726,29 @@ class AttendanceWorker:
             
             (tw, th), _ = cv2.getTextSize(label, font, scale, thickness)
             
+            # Position label above or below box
             y = top - 10
             if y - th - 10 < 0:
                 y = bottom + th + 10
             
-            cv2.rectangle(frame, (left, y - th - 8), (left + tw + 8, y + 2), color, -1)
-            cv2.putText(frame, label, (left + 4, y - 4), font, scale, (255, 255, 255), thickness)
+            # Draw label background
+            cv2.rectangle(frame, 
+                         (left, y - th - 8), 
+                         (left + tw + 8, y + 2), 
+                         color, -1)
+            
+            # Draw label text
+            cv2.putText(frame, label, (left + 4, y - 4), 
+                       font, scale, (255, 255, 255), thickness)
+        
+        # Add watermark
+        cv2.putText(frame, "ArcFace", (10, frame.shape[0] - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        # Add FPS counter
+        if self.fps > 0:
+            cv2.putText(frame, f"FPS: {self.fps:.1f}", (frame.shape[1] - 120, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         return frame
 
@@ -687,18 +776,11 @@ class AttendanceWorker:
 
     def _save_captured_face(self, name: str, face_image: np.ndarray, is_known: bool) -> str:
         """
-        🔥🔥🔥 MOST IMPORTANT FUNCTION 🔥🔥🔥
-        
         Saves image to backend folder AND returns clickable HTTP URL
-        for Google Sheets.
-        
-        This does NOT upload to Google Drive.
-        This does NOT return local file path.
-        This returns HTTP URL that opens the image.
         """
         safe_name = name.replace("/", "_").replace("\\", "_").strip() or "Unknown"
 
-        # 🔥 Save to local folder (already happening)
+        # Save to local folder
         base = self.captured_known_dir if is_known else self.captured_unknown_dir
         person_dir = os.path.join(base, safe_name if is_known else "Unknown")
         os.makedirs(person_dir, exist_ok=True)
@@ -707,19 +789,21 @@ class AttendanceWorker:
         filename = f"{self.camera_name}_{safe_name}_{ts}.jpg"
         full_path = os.path.join(person_dir, filename)
 
-        # Save the image (ONE TIME ONLY)
-        cv2.imwrite(full_path, face_image)
-        
-        # 🔥 Create relative path from "Captured Images" folder
+        # Save the image
+        try:
+            cv2.imwrite(full_path, face_image)
+        except Exception as e:
+            print(f"❌ Failed to save image: {e}")
+            return ""
+
+        # Create relative path from "Captured Images" folder
         relative_path = os.path.relpath(full_path, "Captured Images")
         relative_path = relative_path.replace(os.sep, "/")
         
-        # 🔥 URL-encode spaces (CRITICAL!)
-        # "Known Images" → "Known%20Images"
+        # URL-encode spaces (CRITICAL!)
         encoded_path = urllib.parse.quote(relative_path)
         
         # 🔥 Final clickable link for Google Sheets
-        # Example: http://192.168.1.20:8000/media/Known%20Images/AKASH/Cam1_AKASH_20250105_123456.jpg
         clickable_url = f"{self.base_url}/media/{encoded_path}"
         
         return clickable_url
@@ -731,7 +815,7 @@ class AttendanceWorker:
                 success = google_api.log_attendance(self.camera_name, name, image_url)
                 if success:
                     print(f"✅ Logged to Google Sheets: {name}")
-                    print(f"   🔗 Link: {image_url}")
+                    print(f"   🔗 Image: {image_url}")
                 else:
                     print(f"❌ Failed to log to Google Sheets for {name}")
             else:

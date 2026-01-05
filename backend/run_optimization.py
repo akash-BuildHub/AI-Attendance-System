@@ -1,140 +1,107 @@
 """
-🔥 METAHEURISTIC OPTIMIZATION SETUP SCRIPT
+🔥 OPTIMIZATION TOOL (ArcFace Edition)
+Now uses: SHADE → L-SHADE → Local Refinement (security-first)
 
-Run this ONCE to find optimal parameters for your system.
-Then the system will use these parameters automatically.
+Commands:
+  python run_optimization.py --create-baseline
+  python run_optimization.py --optimize
+  python run_optimization.py --show
 """
 
 import sys
 import json
-from metaheuristic_optimizer import PSO_HillClimbing_Optimizer, ParticleConfig
+
+from metaheuristic_optimizer import SHADE_LSHADE_SecurityOptimizer, ParticleConfig
 
 
-def create_baseline_config():
-    """Create a baseline configuration file with MULTI-TRACKING defaults"""
+def create_arcface_baseline_config():
     baseline = {
-        "tolerance": 0.54,
+        "tolerance": 0.47,            # good CCTV starting point for ArcFace cosine
         "downscale_factor": 0.35,
-        "recognition_interval": 0.75,
-        "num_jitters": 1,
-        "top_k": 5
+        "recognition_interval": 0.60,
+        "num_jitters": 0,             # unused in ArcFace pipeline
+        "top_k": 1                    # unused in ArcFace pipeline
     }
-    
+
     with open("optimal_config.json", "w") as f:
         json.dump(baseline, f, indent=2)
-    
-    print("✅ Created MULTI-TRACKING baseline optimal_config.json")
-    print("   (Optimized for multiple bounding boxes)")
+
+    print("✅ Created baseline optimal_config.json (ArcFace + Security bias)")
     print(json.dumps(baseline, indent=2))
-    
-    # Also create a config file for attendance_worker settings
-    worker_settings = {
-        "note": "These settings are hardcoded in AttendanceWorker class",
-        "recommended_settings": {
-            "iou_threshold": 0.18,
-            "min_face_width": 75,
-            "min_face_height": 75,
-            "aspect_ratio_min": 0.65,
-            "aspect_ratio_max": 1.5
-        }
-    }
-    
-    with open("worker_settings.json", "w") as f:
-        json.dump(worker_settings, f, indent=2)
+    print("\n🎯 Notes:")
+    print("   • ArcFace tolerance is cosine similarity threshold")
+    print("   • Typical CCTV range: 0.44–0.52")
+    print("   • Lower = stricter / fewer false matches")
 
 
-def run_full_optimization():
-    """Run full PSO + Hill Climbing optimization"""
-    print("\n" + "🔥"*30)
-    print("METAHEURISTIC OPTIMIZATION")
-    print("This will take a few minutes...")
-    print("🔥"*30 + "\n")
-    
-    # Create optimizer
-    optimizer = PSO_HillClimbing_Optimizer()
-    
-    # TODO: In production, you would:
-    # 1. Start a camera worker
-    # 2. Pass it to optimizer.optimize(worker)
-    # 3. Let it test configurations on live feed
-    
-    # For now, we'll use the simulated version
-    print("⚠️  NOTE: Running in SIMULATION mode")
-    print("   For production, integrate with live camera worker\n")
-    
-    # Run optimization (pass None since we're simulating)
-    optimal_config = optimizer.optimize(None)
-    
+def run_shade_optimization():
+    print("\n" + "🔒" * 30)
+    print("SHADE-LSHADE SECURITY OPTIMIZATION")
+    print("🔒" * 30)
+
+    optimizer = SHADE_LSHADE_SecurityOptimizer(
+        config_file="optimal_config.json",
+        seed=42
+    )
+
+    # In production you can pass a live worker to evaluate real metrics.
+    # For now it uses the CCTV-biased simulation in metaheuristic_optimizer.py
+    best = optimizer.optimize(worker=None)
+
     print("\n✅ Optimization complete!")
-    print("   The system will now use these optimal parameters automatically.")
+    print("📊 Best config saved to optimal_config.json:")
+    print(json.dumps(best.to_dict(), indent=2))
 
 
 def print_current_config():
-    """Print current configuration"""
     try:
         with open("optimal_config.json", "r") as f:
-            config = json.load(f)
-        
+            cfg = json.load(f)
+
         print("\n📊 Current Optimal Configuration:")
-        print("="*50)
-        for key, value in config.items():
-            print(f"   {key:25s}: {value}")
-        print("="*50)
-        
-        print("\n🎯 Multi-Tracking Settings (hardcoded):")
-        print("="*50)
-        print("   iou_threshold: 0.18")
-        print("   min_face_width: 75")
-        print("   min_face_height: 75")
-        print("   aspect_ratio: 0.65 - 1.5")
-        print("="*50)
-        
+        print("=" * 55)
+        print(f"   tolerance:            {cfg.get('tolerance')}  (ArcFace cosine threshold)")
+        print(f"   downscale_factor:     {cfg.get('downscale_factor')}")
+        print(f"   recognition_interval: {cfg.get('recognition_interval')}")
+        print(f"   num_jitters:          {cfg.get('num_jitters')} (unused in ArcFace)")
+        print(f"   top_k:                {cfg.get('top_k')} (unused in ArcFace)")
+        print("=" * 55)
+
     except FileNotFoundError:
-        print("❌ No configuration file found")
+        print("❌ No optimal_config.json found")
         print("   Run: python run_optimization.py --create-baseline")
 
 
 def main():
-    if len(sys.argv) > 1:
-        command = sys.argv[1]
-        
-        if command == "--create-baseline":
-            create_baseline_config()
-        
-        elif command == "--optimize":
-            run_full_optimization()
-        
-        elif command == "--show":
-            print_current_config()
-        
-        else:
-            print(f"❌ Unknown command: {command}")
-            print_usage()
-    
+    if len(sys.argv) <= 1:
+        print_usage()
+        return
+
+    cmd = sys.argv[1].strip()
+
+    if cmd == "--create-baseline":
+        create_arcface_baseline_config()
+    elif cmd == "--optimize":
+        run_shade_optimization()
+    elif cmd == "--show":
+        print_current_config()
     else:
+        print(f"❌ Unknown command: {cmd}")
         print_usage()
 
 
 def print_usage():
-    print("\n🔥 METAHEURISTIC OPTIMIZATION TOOL")
-    print("="*60)
+    print("\n🔥 ARCFACE SECURITY OPTIMIZATION TOOL (SHADE-LSHADE)")
+    print("=" * 60)
     print("\nUsage:")
     print("  python run_optimization.py --create-baseline")
-    print("     → Create baseline config for MULTI-TRACKING")
-    print()
     print("  python run_optimization.py --optimize")
-    print("     → Run full PSO + Hill Climbing optimization")
-    print()
     print("  python run_optimization.py --show")
-    print("     → Show current configuration")
-    print()
-    print("="*60)
-    print("\n📝 Recommended workflow:")
-    print("   1. python run_optimization.py --create-baseline")
-    print("   2. Set BASE_URL: export BASE_URL=http://YOUR_IP:8000")
-    print("   3. Start server: uvicorn main:app --host 0.0.0.0 --port 8000")
-    print("   4. Camera will show multiple bounding boxes with clear labels")
-    print()
+    print("\nWorkflow:")
+    print("  1) Create baseline")
+    print("  2) Optimize (writes optimal_config.json)")
+    print("  3) Run server and workers will auto-load config")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

@@ -276,7 +276,8 @@ async def stream_camera(camera_id: int):
                 time.sleep(0.03)
                 continue
 
-            ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            # 🔥 FIX 7: Improve IMAGE CLARITY in stream
+            ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])  # Increased from 70
             if not ok:
                 time.sleep(0.01)
                 continue
@@ -323,7 +324,8 @@ async def preview_stream(rtspUrl: str):
                     new_height = int(height * ratio)
                     frame = cv2.resize(frame, (1280, new_height), interpolation=cv2.INTER_AREA)
                 
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                # 🔥 FIX 7: Improve IMAGE CLARITY in preview
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])  # Increased from 70
                 frame_bytes = buffer.tobytes()
                 
                 yield (b'--frame\r\n'
