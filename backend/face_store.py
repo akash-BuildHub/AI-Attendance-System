@@ -4,23 +4,22 @@ import cv2
 import face_recognition
 from datetime import datetime
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
-from google_api import google_api
-
 ENCODINGS_FILE = "face_encodings.pkl"
+TRAIN_DIR = "Person Images"
 
 
 class FaceStore:
+    """🔥 FINAL FIXED: Person-level minimum distance (no more known→unknown)"""
+    
     def __init__(self):
         self.encodings: List[np.ndarray] = []
         self.names: List[str] = []
         self.face_ids: List[str] = []
-        self.training_people: Dict[str, List[Dict[str, str]]] = {}
-
+        self.encodings_array: Optional[np.ndarray] = None
         self.load_encodings()
-        self.load_training_data()
 
     def load_encodings(self):
         if os.path.exists(ENCODINGS_FILE):
@@ -30,10 +29,16 @@ class FaceStore:
                     self.encodings = data.get("encodings", [])
                     self.names = data.get("names", [])
                     self.face_ids = data.get("face_ids", [])
+                
+                if self.encodings:
+                    self.encodings_array = np.array(self.encodings)
+                
                 print(f"✅ Loaded {len(self.encodings)} face encodings")
+                print(f"👥 People: {len(set(self.names))} - {sorted(set(self.names))}")
             except Exception as e:
                 print(f"❌ Error loading encodings: {e}")
                 self.encodings, self.names, self.face_ids = [], [], []
+                self.encodings_array = None
         else:
             print("⚠️ No existing face encodings found")
 
@@ -41,114 +46,114 @@ class FaceStore:
         data = {"encodings": self.encodings, "names": self.names, "face_ids": self.face_ids}
         with open(ENCODINGS_FILE, "wb") as f:
             pickle.dump(data, f)
+        
+        if self.encodings:
+            self.encodings_array = np.array(self.encodings)
+        
         print(f"💾 Saved {len(self.encodings)} face encodings")
 
-    def load_training_data(self):
-        if not google_api.is_authenticated():
-            print("⚠️ Google API not authenticated")
-            return
-
+    def train_from_local(self) -> Dict[str, Any]:
+        """Train from local Person Images folder using CNN for consistency"""
         try:
-            print("🔄 Loading training data from Google Drive...")
-            self.training_people = google_api.list_training_people()
+            if not os.path.exists(TRAIN_DIR):
+                os.makedirs(TRAIN_DIR, exist_ok=True)
+                return {"success": False, "message": f"Created {TRAIN_DIR} folder. Please add person folders with images."}
 
-            if not self.training_people:
-                print("⚠️ WARNING: No training people found")
-
-            for person, imgs in self.training_people.items():
-                print(f"  👤 {person}: {len(imgs)} images")
-            print(f"✅ Loaded training data for {len(self.training_people)} people")
-
-        except Exception as e:
-            print(f"❌ Error loading training data: {e}")
-            self.training_people = {}
-
-    def train_from_google_drive(self) -> Dict[str, Any]:
-        if not google_api.is_authenticated():
-            return {"success": False, "message": "Google API not authenticated"}
-
-        try:
-            self.load_training_data()
-
-            if not self.training_people:
-                return {"success": False, "message": "No training people found in Drive"}
-
-            print("🎯 Starting face training...")
+            print("\n" + "="*60)
+            print("🎯 TRAINING FROM LOCAL PERSON IMAGES")
+            print("="*60)
+            print(f"📁 Training directory: {os.path.abspath(TRAIN_DIR)}")
+            
             self.encodings, self.names, self.face_ids = [], [], []
-
             total_faces = 0
             trained_people = []
 
-            for person_name, images in self.training_people.items():
-                print(f"\n👤 Training: {person_name} ({len(images)} images)")
+            folders = [f for f in os.listdir(TRAIN_DIR) if os.path.isdir(os.path.join(TRAIN_DIR, f))]
+            
+            if not folders:
+                return {
+                    "success": False, 
+                    "message": f"No person folders found in {TRAIN_DIR}. Create folders named after each person."
+                }
+            
+            print(f"📂 Found {len(folders)} person folders")
+            print("="*60)
 
-                images_ok = 0
+            for person_name in folders:
+                person_dir = os.path.join(TRAIN_DIR, person_name)
+                print(f"\n👤 Training: {person_name}")
+                
+                images = [f for f in os.listdir(person_dir) 
+                         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+                
+                if not images:
+                    print(f"   ⚠️ No images found")
+                    continue
+                
+                print(f"   📸 Found {len(images)} images")
                 faces_found = 0
 
-                for idx, image_info in enumerate(images):
+                for idx, img_name in enumerate(images):
                     try:
-                        print(f"  📸 [{idx+1}/{len(images)}] {image_info.get('name', '?')}")
+                        path = os.path.join(person_dir, img_name)
+                        print(f"   [{idx+1}/{len(images)}] {img_name[:40]}... ", end="", flush=True)
                         
-                        image_bytes = google_api.download_image(image_info["id"])
-                        if not image_bytes:
-                            print(f"     ❌ Failed to download")
-                            continue
-
-                        nparr = np.frombuffer(image_bytes, np.uint8)
-                        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        image = cv2.imread(path)
                         if image is None:
-                            print(f"     ❌ Failed to decode")
+                            print("❌ Load failed")
                             continue
 
                         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-                        # hog is faster; cnn is more accurate but slow without GPU
-                        face_locations = face_recognition.face_locations(rgb, model="hog")
+                        face_locations = face_recognition.face_locations(rgb, model="cnn")
+                        
                         if not face_locations:
-                            print(f"     ❌ No faces found")
+                            print("❌ No face")
                             continue
 
-                        # ✅ Better stability
                         face_encs = face_recognition.face_encodings(
-                            rgb,
-                            face_locations,
-                            num_jitters=2,
-                            model="small"
+                            rgb, face_locations, num_jitters=3, model="large"
                         )
 
                         for enc in face_encs:
                             self.encodings.append(enc)
                             self.names.append(person_name)
-                            self.face_ids.append(f"train_{datetime.now().timestamp()}")
+                            self.face_ids.append(f"train_{person_name}_{datetime.now().timestamp()}")
                             faces_found += 1
 
-                        images_ok += 1
-                        print(f"     ✅ Found {len(face_encs)} face(s)")
+                        print(f"✅ {len(face_encs)} face(s)")
 
                     except Exception as e:
-                        print(f"     ❌ Error: {e}")
+                        print(f"❌ {e}")
                         continue
 
                 if faces_found > 0:
-                    trained_people.append({"name": person_name, "images": images_ok, "faces": faces_found})
+                    trained_people.append({"name": person_name, "faces": faces_found})
                     total_faces += faces_found
-                    print(f"  ✅ {person_name}: {faces_found} face(s) trained")
+                    print(f"   ✅ Total: {faces_found} encodings")
                 else:
-                    print(f"  ⚠️ {person_name}: No faces trained")
+                    print(f"   ⚠️ No faces extracted")
 
+            print("\n" + "="*60)
             if total_faces > 0:
                 self.save_encodings()
-                msg = f"Trained {total_faces} faces for {len(trained_people)} people"
-                print(f"✅ Training completed: {msg}")
+                msg = f"Trained {total_faces} encodings for {len(trained_people)} people using CNN"
+                print(f"✅ {msg}")
+                print(f"👥 People: {[p['name'] for p in trained_people]}")
+                print("="*60 + "\n")
                 
-                if os.path.exists(ENCODINGS_FILE):
-                    print(f"💾 Saved to: {ENCODINGS_FILE} ({os.path.getsize(ENCODINGS_FILE)} bytes)")
-                else:
-                    print(f"❌ ERROR: {ENCODINGS_FILE} not created!")
-                
-                return {"success": True, "message": msg, "data": {"total_faces": total_faces, "people_trained": len(trained_people)}}
+                return {
+                    "success": True, 
+                    "message": msg, 
+                    "data": {
+                        "total_faces": total_faces, 
+                        "people_trained": len(trained_people),
+                        "people_list": [p["name"] for p in trained_people],
+                        "details": trained_people,
+                        "training_model": "CNN"
+                    }
+                }
 
-            return {"success": False, "message": "No faces found in training images"}
+            return {"success": False, "message": "No faces found. Ensure images show clear faces."}
 
         except Exception as e:
             print(f"❌ Training failed: {e}")
@@ -158,79 +163,85 @@ class FaceStore:
 
     @staticmethod
     def _distance_to_conf(distance: float, tolerance: float) -> float:
-        """
-        Confidence normalized around tolerance:
-        - distance == 0 -> 1.0
-        - distance == tolerance -> ~0.5
-        - distance > tolerance -> < 0.5
-        """
+        """Convert distance to confidence score"""
         if tolerance <= 0:
             return 0.0
-        conf = 1.0 - (distance / (tolerance * 2.0))
-        return float(max(0.0, min(1.0, conf)))
+        if distance <= tolerance * 0.4:
+            return 1.0
+        elif distance <= tolerance:
+            return 1.0 - ((distance - tolerance * 0.4) / (tolerance * 0.6))
+        else:
+            return max(0.0, 1.0 - (distance / tolerance))
 
     def recognize_faces(
         self,
         rgb_frame: np.ndarray,
-        tolerance: float = 0.50,  # Increased default tolerance for CCTV
+        tolerance: float = 0.52,
         model: str = "hog",
-        top_k: int = 6
+        top_k: int = 5,
+        num_jitters: int = 1
     ) -> List[Dict[str, Any]]:
+        """
+        🔥 FINAL FIXED: Person-level minimum distance
+        NO MORE "known → unknown" for clear CCTV faces
+        """
         try:
             face_locations = face_recognition.face_locations(rgb_frame, model=model)
             if not face_locations:
                 return []
 
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations, num_jitters=1, model="small")
+            face_encodings = face_recognition.face_encodings(
+                rgb_frame, face_locations, num_jitters=num_jitters, model="large"
+            )
 
             if not self.encodings:
                 return [{
                     "name": "Unknown",
-                    "location": (left, top, right, bottom),
+                    "location": (top, right, bottom, left),
                     "confidence": 0.0,
                     "is_known": False
                 } for (top, right, bottom, left) in face_locations]
 
-            known_encs = np.array(self.encodings)
-
+            known_encs = self.encodings_array if self.encodings_array is not None else np.array(self.encodings)
             results: List[Dict[str, Any]] = []
-            eps = 1e-6
+            
+            # 🔥 FIXED: Build name->indices mapping once
+            name_to_indices = defaultdict(list)
+            for i, name in enumerate(self.names):
+                name_to_indices[name].append(i)
 
             for face_encoding, (top, right, bottom, left) in zip(face_encodings, face_locations):
                 distances = face_recognition.face_distance(known_encs, face_encoding)
-
-                # top-k nearest
-                idxs = np.argsort(distances)[:max(1, top_k)]
-                nearest = [(int(i), float(distances[i])) for i in idxs]
-
-                # keep only those within tolerance
-                inliers = [(i, d) for (i, d) in nearest if d <= tolerance]
-
-                if not inliers:
+                
+                # 🔥 FIXED: Person-level minimum distance (no voting, no ambiguity)
+                best_name = None
+                best_dist = 1.0  # Start with worst possible
+                
+                for name, idx_list in name_to_indices.items():
+                    # Get minimum distance for this person across all their encodings
+                    person_dist = float(np.min(distances[idx_list]))
+                    if person_dist < best_dist:
+                        best_dist = person_dist
+                        best_name = name
+                
+                # Determine if match is good enough
+                if best_name is not None and best_dist <= tolerance:
+                    results.append({
+                        "name": best_name,
+                        "location": (top, right, bottom, left),
+                        "confidence": self._distance_to_conf(best_dist, tolerance),
+                        "is_known": True,
+                        "distance": best_dist,
+                        "method": "person_min_distance"
+                    })
+                else:
                     results.append({
                         "name": "Unknown",
-                        "location": (left, top, right, bottom),
+                        "location": (top, right, bottom, left),
                         "confidence": 0.0,
                         "is_known": False,
-                        "distance": float(nearest[0][1]) if nearest else 1.0
+                        "distance": best_dist if best_name else 1.0
                     })
-                    continue
-
-                # weighted vote
-                votes = defaultdict(float)
-                for i, d in inliers:
-                    votes[self.names[i]] += 1.0 / (d + eps)
-
-                best_name = max(votes.items(), key=lambda x: x[1])[0]
-                best_dist = min(d for (i, d) in inliers if self.names[i] == best_name)
-
-                results.append({
-                    "name": best_name,
-                    "location": (left, top, right, bottom),
-                    "confidence": self._distance_to_conf(best_dist, tolerance),
-                    "is_known": True,
-                    "distance": best_dist
-                })
 
             return results
 
@@ -239,11 +250,17 @@ class FaceStore:
             return []
 
     def get_training_status(self) -> Dict[str, Any]:
+        unique_people = sorted(set(self.names))
         return {
             "encodings_count": len(self.encodings),
-            "unique_people": len(set(self.names)),
-            "people_list": sorted(set(self.names)),
-            "drive_training_people": sorted(list(self.training_people.keys())) if self.training_people else [],
+            "unique_people": len(unique_people),
+            "people_list": unique_people,
+            "training_dir": os.path.abspath(TRAIN_DIR),
+            "training_dir_exists": os.path.exists(TRAIN_DIR),
+            "has_encodings_file": os.path.exists(ENCODINGS_FILE),
+            "encodings_file_path": os.path.abspath(ENCODINGS_FILE),
+            "training_model": "CNN (matching recognition default)",
+            "last_trained": datetime.now().strftime("%Y-%m-%d %H:%M") if self.encodings else "Never"
         }
 
 

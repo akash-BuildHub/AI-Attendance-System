@@ -1,0 +1,7 @@
+{
+  "tolerance": 0.54,
+  "downscale_factor": 0.33,
+  "recognition_interval": 0.75,
+  "num_jitters": 1,
+  "top_k": 5
+}
