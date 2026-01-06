@@ -1,7 +1,9 @@
 {
     "tolerance": 0.47,
     "downscale_factor": 0.35,
-    "recognition_interval": 0.9,
+    "recognition_interval": 1.1,
     "num_jitters": 0,
-    "top_k": 1
+    "top_k": 1,
+    "min_detection_confidence": 0.45,
+    "min_face_size": 60
 }
