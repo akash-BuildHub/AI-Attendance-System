@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 @dataclass
 class CameraMeta:
@@ -8,3 +8,11 @@ class CameraMeta:
     rtsp_url: str
     running: bool = False
 
+@dataclass
+class AppState:
+    session_manager: Optional[Any] = None
+    detector: Optional[Any] = None
+    embedder: Optional[Any] = None
+    config_cache: Dict[str, Any] = field(default_factory=dict)
+
+state = AppState()

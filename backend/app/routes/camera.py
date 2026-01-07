@@ -1,31 +1,96 @@
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
 import time
 import cv2
 import urllib.parse
+from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
 from app.services.session_manager import manager
-from app.services.training_service import load_prototypes
 
-router = APIRouter(prefix="/camera", tags=["camera"])
-alias_router = APIRouter()
+router = APIRouter(prefix="/cameras", tags=["cameras"])
+legacy_router = APIRouter(prefix="/camera", tags=["camera-legacy"])
 
-@router.post("/test-camera")
-def test_camera(payload: dict):
+async def _check_camera(rtsp_url: str) -> bool:
+    def _capture():
+        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        return bool(ok and frame is not None)
+
+    return await run_in_threadpool(_capture)
+
+@router.post("/test")
+async def test_camera(payload: dict):
     rtsp_url = payload.get("rtspUrl", "")
     if not rtsp_url:
         raise HTTPException(status_code=400, detail="rtspUrl required")
 
     rtsp_url = urllib.parse.unquote(rtsp_url)
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-    try:
-        ok, frame = cap.read()
-    finally:
-        cap.release()
-
-    if not ok or frame is None:
+    ok = await _check_camera(rtsp_url)
+    if not ok:
         return {"success": False, "message": "Unable to connect to camera"}
     return {"success": True, "message": "Connected successfully"}
+
+@router.get("")
+async def list_cameras():
+    return {"success": True, "data": manager.list_cameras()}
+
+@router.post("")
+async def create_camera(payload: dict):
+    return await start_camera(payload)
+
+@router.post("/start")
+async def start_camera(payload: dict):
+    camera_id = int(payload.get("cameraId", 0))
+    camera_name = (payload.get("cameraName") or f"Camera_{camera_id}").strip()
+    rtsp_url = payload.get("rtspUrl", "")
+    if not rtsp_url:
+        raise HTTPException(status_code=400, detail="rtspUrl required")
+
+    rtsp_url = urllib.parse.unquote(rtsp_url)
+    sess = await run_in_threadpool(manager.start_camera, camera_id, camera_name, rtsp_url)
+    return {"success": True, "message": "started", "data": {"cameraId": camera_id, "cameraName": sess.camera_name}}
+
+@router.post("/stop")
+async def stop_camera(payload: dict):
+    camera_id = int(payload.get("cameraId", 0))
+    vp = await run_in_threadpool(manager.stop_camera, camera_id)
+    return {"success": True, "message": "stopped", "video_path": vp}
+
+@router.post("/resume")
+async def resume_camera(payload: dict):
+    camera_id = int(payload.get("cameraId", 0))
+    sess = await run_in_threadpool(manager.resume_camera, camera_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="camera not found")
+    return {"success": True, "message": "resumed", "data": {"cameraId": camera_id, "cameraName": sess.camera_name}}
+
+@router.get("/stream/{camera_id}")
+def stream(camera_id: int):
+    sess = manager.get(camera_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="camera not running")
+
+    def gen():
+        while True:
+            current = manager.get(camera_id)
+            if not current or not current.running:
+                break
+
+            frame = current.latest_annotated or current.latest_frame
+            if frame is None:
+                time.sleep(0.03)
+                continue
+
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                continue
+
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
+
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @router.get("/preview-stream")
 def preview_stream(rtspUrl: str):
@@ -53,69 +118,30 @@ def preview_stream(rtspUrl: str):
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-@router.post("/start")
-def start_camera(payload: dict):
-    camera_id = int(payload.get("cameraId", 0))
-    camera_name = (payload.get("cameraName") or f"Camera_{camera_id}").strip()
-    rtsp_url = payload.get("rtspUrl", "")
-    if not rtsp_url:
-        raise HTTPException(status_code=400, detail="rtspUrl required")
+@legacy_router.post("/test-camera")
+async def test_camera_alias(payload: dict):
+    return await test_camera(payload)
 
-    rtsp_url = urllib.parse.unquote(rtsp_url)
+@legacy_router.post("/start")
+async def start_camera_alias(payload: dict):
+    return await start_camera(payload)
 
-    prototypes = load_prototypes()
-    if not prototypes:
-        warning = "No trained data. Train first using POST /train"
-    else:
-        warning = None
+@legacy_router.post("/stop")
+async def stop_camera_alias(payload: dict):
+    return await stop_camera(payload)
 
-    sess = manager.start(camera_id, camera_name, rtsp_url)
-    if warning:
-        return {"success": True, "message": warning, "data": {"cameraId": camera_id, "cameraName": sess.camera_name}}
-    return {"success": True, "message": "started", "data": {"cameraId": camera_id, "cameraName": sess.camera_name}}
+@legacy_router.post("/resume")
+async def resume_camera_alias(payload: dict):
+    return await resume_camera(payload)
 
-@router.post("/stop")
-def stop_camera(payload: dict):
-    camera_id = int(payload.get("cameraId", 0))
-    vp = manager.stop(camera_id)
-    return {"success": True, "message": "stopped", "video_path": vp}
+@legacy_router.get("/stream/{camera_id}")
+def stream_alias(camera_id: int):
+    return stream(camera_id)
 
-@router.get("/stream/{camera_id}")
-def stream(camera_id: int):
-    sess = manager.get(camera_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="camera not running")
+@legacy_router.post("/start-feed")
+async def start_feed(payload: dict):
+    return await start_camera(payload)
 
-    def gen():
-        while True:
-            sess = manager.get(camera_id)
-            if not sess or not sess.running:
-                break
-
-            # process AI + update annotated frame
-            manager.process_once(camera_id)
-
-            frame = sess.latest_annotated
-            if frame is None:
-                time.sleep(0.03)
-                continue
-
-            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if not ok:
-                continue
-
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
-
-    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-@alias_router.post("/test-camera")
-def test_camera_alias(payload: dict):
-    return test_camera(payload)
-
-@alias_router.post("/start-feed")
-def start_feed(payload: dict):
-    return start_camera(payload)
-
-@alias_router.post("/stop-feed")
-def stop_feed(payload: dict):
-    return stop_camera(payload)
+@legacy_router.post("/stop-feed")
+async def stop_feed(payload: dict):
+    return await stop_camera(payload)

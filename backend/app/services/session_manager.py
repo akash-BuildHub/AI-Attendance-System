@@ -1,7 +1,11 @@
+import logging
+import threading
 import time
-import cv2
 from dataclasses import dataclass, field
 from typing import Dict, Optional
+
+import cv2
+import numpy as np
 
 from app.core.config import RUNTIME
 from app.services.camera_stream import CameraStream
@@ -13,6 +17,8 @@ from app.services.matcher import match_embedding
 from app.services.capture_service import save_capture
 from app.services.attendance_service import log_to_sheet
 from app.services.training_service import load_prototypes
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class CameraSession:
@@ -27,19 +33,84 @@ class CameraSession:
     prototypes: dict
     running: bool = False
     last_capture_by_track: Dict[int, float] = field(default_factory=dict)
-    latest_annotated: Optional[any] = None
+    last_label_by_track: Dict[int, str] = field(default_factory=dict)
+    last_label_time_by_track: Dict[int, float] = field(default_factory=dict)
+    logged_labels: set = field(default_factory=set)
+    latest_annotated: Optional[np.ndarray] = None
+    latest_frame: Optional[np.ndarray] = None
+    stop_event: threading.Event = field(default_factory=threading.Event)
+    thread: Optional[threading.Thread] = None
+    last_frame_time: float = 0.0
+    stream_restarts: int = 0
 
-class SessionManager:
+class CameraSessionManager:
     def __init__(self):
         self.sessions: Dict[int, CameraSession] = {}
+        self.lock = threading.Lock()
+        self.frame_timeout_sec = 5.0
+        self.max_stream_restarts = 3
 
-    def start(self, camera_id: int, camera_name: str, rtsp_url: str):
-        # Load prototypes (trained embeddings)
+    def start_camera(self, camera_id: int, camera_name: str, rtsp_url: str) -> CameraSession:
+        with self.lock:
+            existing = self.sessions.get(camera_id)
+            if existing:
+                self._stop_session(existing, remove=False)
+
+            session = self._create_session(camera_id, camera_name, rtsp_url)
+            self.sessions[camera_id] = session
+            self._start_session(session)
+            return session
+
+    def stop_camera(self, camera_id: int) -> Optional[str]:
+        with self.lock:
+            sess = self.sessions.get(camera_id)
+            if not sess:
+                return None
+            path = self._stop_session(sess, remove=False)
+            return path
+
+    def resume_camera(self, camera_id: int) -> Optional[CameraSession]:
+        with self.lock:
+            sess = self.sessions.get(camera_id)
+            if not sess:
+                return None
+            if sess.running:
+                return sess
+            sess.stream = CameraStream(sess.rtsp_url)
+            sess.recorder = VideoRecorder()
+            sess.detector = YoloFaceDetector()
+            sess.embedder = ArcFaceEmbedder()
+            sess.tracker = ByteTrackerService()
+            sess.prototypes = load_prototypes()
+            sess.last_capture_by_track.clear()
+            sess.last_label_by_track.clear()
+            sess.last_label_time_by_track.clear()
+            sess.logged_labels.clear()
+            sess.latest_annotated = None
+            sess.latest_frame = None
+            sess.stop_event.clear()
+            sess.last_frame_time = 0.0
+            sess.stream_restarts = 0
+            self._start_session(sess)
+            return sess
+
+    def get(self, camera_id: int) -> Optional[CameraSession]:
+        return self.sessions.get(camera_id)
+
+    def list_cameras(self):
+        return [
+            {
+                "camera_id": sess.camera_id,
+                "camera_name": sess.camera_name,
+                "rtsp_url": sess.rtsp_url,
+                "running": sess.running,
+            }
+            for sess in self.sessions.values()
+        ]
+
+    def _create_session(self, camera_id: int, camera_name: str, rtsp_url: str) -> CameraSession:
         prototypes = load_prototypes()
-        if camera_id in self.sessions:
-            self.stop(camera_id)
-
-        sess = CameraSession(
+        return CameraSession(
             camera_id=camera_id,
             camera_name=camera_name,
             rtsp_url=rtsp_url,
@@ -49,104 +120,152 @@ class SessionManager:
             embedder=ArcFaceEmbedder(),
             tracker=ByteTrackerService(),
             prototypes=prototypes,
-            running=True
+            running=False,
         )
 
-        sess.stream.start()
-        self.sessions[camera_id] = sess
-        return sess
+    def _start_session(self, session: CameraSession):
+        if session.running:
+            return
+        session.running = True
+        session.stream.start()
+        session.thread = threading.Thread(
+            target=self._process_loop, args=(session,), daemon=True
+        )
+        session.thread.start()
 
-    def stop(self, camera_id: int):
-        sess = self.sessions.get(camera_id)
-        if not sess:
-            return None
-        sess.running = False
-        sess.stream.stop()
-        video_path = sess.recorder.stop()
-        self.sessions.pop(camera_id, None)
-        return video_path
+    def _stop_session(self, session: CameraSession, remove: bool) -> Optional[str]:
+        session.running = False
+        session.stop_event.set()
+        try:
+            session.stream.stop()
+        except Exception:
+            logger.exception("Failed stopping camera stream")
+        path = None
+        try:
+            path = session.recorder.stop()
+        except Exception:
+            logger.exception("Failed stopping recorder")
+        if session.thread and session.thread.is_alive():
+            session.thread.join(timeout=2.0)
+        if remove:
+            self.sessions.pop(session.camera_id, None)
+        return path
 
-    def get(self, camera_id: int) -> Optional[CameraSession]:
-        return self.sessions.get(camera_id)
+    def _restart_stream(self, session: CameraSession):
+        session.stream_restarts += 1
+        if session.stream_restarts > self.max_stream_restarts:
+            logger.error("Camera %s exceeded restart limit", session.camera_id)
+            session.running = False
+            session.stop_event.set()
+            return
+        logger.warning("Restarting camera stream for %s", session.camera_id)
+        try:
+            session.stream.stop()
+        except Exception:
+            logger.exception("Failed to stop stream during restart")
+        session.stream = CameraStream(session.rtsp_url)
+        session.stream.start()
+        session.last_frame_time = time.time()
 
-    def process_once(self, camera_id: int):
-        sess = self.sessions.get(camera_id)
-        if not sess or not sess.running:
-            return None
+    def _process_loop(self, session: CameraSession):
+        threshold = float(RUNTIME["cosine_threshold"])
+        min_face = int(RUNTIME["min_face_size"])
+        min_conf = float(RUNTIME["min_det_conf"])
+        capture_cooldown = float(RUNTIME["capture_cooldown_sec"])
+        unknown_margin = 0.05
+        try:
+            while session.running and not session.stop_event.is_set():
+                frame = session.stream.read()
+                now = time.time()
+                if frame is None:
+                    if session.last_frame_time and (now - session.last_frame_time) > self.frame_timeout_sec:
+                        self._restart_stream(session)
+                    time.sleep(0.02)
+                    continue
 
-        frame = sess.stream.read()
-        if frame is None:
-            return None
+                session.last_frame_time = now
+                session.latest_frame = frame
 
-        # Start recording when first frame arrives
-        if sess.recorder.writer is None:
-            sess.recorder.start(frame, sess.camera_name, fps=RUNTIME["record_fps"])
+                if session.recorder.writer is None:
+                    session.recorder.start(frame, session.camera_name, fps=RUNTIME["record_fps"])
 
-        sess.recorder.write(frame)
+                session.recorder.write(frame)
 
-        detections = sess.detector.detect(frame, conf=RUNTIME["min_det_conf"])
-        if not detections:
-            sess.latest_annotated = frame
-            return {"faces": []}
+                detections = session.detector.detect(frame, conf=min_conf)
+                if not detections:
+                    session.latest_annotated = frame
+                    continue
 
-        xyxy = []
-        confs = []
-        for d in detections:
-            x1,y1,x2,y2 = d["xyxy"]
-            # filter tiny faces early
-            if (x2-x1) < RUNTIME["min_face_size"] or (y2-y1) < RUNTIME["min_face_size"]:
-                continue
-            xyxy.append([x1,y1,x2,y2])
-            confs.append(d["conf"])
+                xyxy = []
+                confs = []
+                for d in detections:
+                    x1, y1, x2, y2 = d["xyxy"]
+                    if (x2 - x1) < min_face or (y2 - y1) < min_face:
+                        continue
+                    xyxy.append([x1, y1, x2, y2])
+                    confs.append(d["conf"])
 
-        if not xyxy:
-            sess.latest_annotated = frame
-            return {"faces": []}
+                if not xyxy:
+                    session.latest_annotated = frame
+                    continue
 
-        import numpy as np
-        tracks = sess.tracker.update(np.array(xyxy, dtype=int), np.array(confs, dtype=float))
+                tracks = session.tracker.update(np.array(xyxy, dtype=int), np.array(confs, dtype=float))
 
-        faces_out = []
-        h, w = frame.shape[:2]
+                h, w = frame.shape[:2]
 
-        for i in range(len(tracks)):
-            tid = int(tracks.tracker_id[i])
-            x1,y1,x2,y2 = tracks.xyxy[i].astype(int)
+                for i in range(len(tracks)):
+                    tid = int(tracks.tracker_id[i])
+                    x1, y1, x2, y2 = tracks.xyxy[i].astype(int)
 
-            # expand bbox to include head+neck
-            nx1, ny1, nx2, ny2 = expand_bbox_for_head_neck(x1,y1,x2,y2,w,h)
-            crop = frame[ny1:ny2, nx1:nx2]
-            if crop.size == 0:
-                continue
+                    nx1, ny1, nx2, ny2 = expand_bbox_for_head_neck(x1, y1, x2, y2, w, h)
+                    if (nx2 - nx1) < min_face or (ny2 - ny1) < min_face:
+                        continue
 
-            emb = sess.embedder.embed_face_crop(crop)
-            if emb is None:
-                continue
+                    crop = frame[ny1:ny2, nx1:nx2]
+                    if crop.size == 0:
+                        continue
 
-            label, score = match_embedding(emb, sess.prototypes, threshold=RUNTIME["cosine_threshold"])
+                    emb = session.embedder.embed_face_crop(crop)
+                    if emb is None:
+                        continue
 
-            # capture ONCE per track (cooldown)
-            now = time.time()
-            last = sess.last_capture_by_track.get(tid, 0)
-            if now - last >= RUNTIME["capture_cooldown_sec"]:
-                sess.last_capture_by_track[tid] = now
-                img_path, _dt = save_capture(crop, label, sess.camera_name)
-                log_to_sheet(sess.camera_name, label, img_path)
+                    label, score = match_embedding(emb, session.prototypes, threshold=threshold)
 
-            # draw bbox
-            color = (0,255,0) if label != "Unknown" else (0,0,255)
-            cv2.rectangle(frame, (nx1, ny1), (nx2, ny2), color, 2)
-            text = f"{label} ({score:.2f}) ID:{tid}"
-            cv2.putText(frame, text, (nx1, max(25, ny1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    last_label = session.last_label_by_track.get(tid)
+                    last_label_time = session.last_label_time_by_track.get(tid, 0)
+                    if label == "Unknown" and last_label and last_label != "Unknown":
+                        if (now - last_label_time) < 2.0 and score >= (threshold - unknown_margin):
+                            label = last_label
 
-            faces_out.append({
-                "track_id": tid,
-                "label": label,
-                "score": float(score),
-                "bbox": [int(nx1), int(ny1), int(nx2), int(ny2)]
-            })
+                    session.last_label_by_track[tid] = label
+                    session.last_label_time_by_track[tid] = now
 
-        sess.latest_annotated = frame
-        return {"faces": faces_out}
+                    if label != "Unknown" and label not in session.logged_labels:
+                        last_capture = session.last_capture_by_track.get(tid, 0)
+                        if (now - last_capture) >= capture_cooldown and score >= threshold:
+                            session.last_capture_by_track[tid] = now
+                            img_path, _dt = save_capture(crop, label, session.camera_name)
+                            log_to_sheet(session.camera_name, label, img_path)
+                            session.logged_labels.add(label)
+                    elif label == "Unknown":
+                        last_capture = session.last_capture_by_track.get(tid, 0)
+                        if (now - last_capture) >= capture_cooldown:
+                            session.last_capture_by_track[tid] = now
+                            save_capture(crop, label, session.camera_name)
 
-manager = SessionManager()
+                    color = (0, 255, 0) if label != "Unknown" else (0, 0, 255)
+                    cv2.rectangle(frame, (nx1, ny1), (nx2, ny2), color, 2)
+                    text = f"{label} ({score:.2f}) ID:{tid}"
+                    cv2.putText(frame, text, (nx1, max(25, ny1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+                session.latest_annotated = frame
+        except Exception:
+            logger.exception("Processing loop failed for camera %s", session.camera_id)
+        finally:
+            session.running = False
+            try:
+                session.recorder.stop()
+            except Exception:
+                logger.exception("Failed stopping recorder on exit")
+
+manager = CameraSessionManager()

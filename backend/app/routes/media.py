@@ -3,15 +3,15 @@ import mimetypes
 import urllib.parse
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from app.core.config import CAPTURED_DIR
+from app.core.config import IMAGES_DIR
 
 router = APIRouter(prefix="/media", tags=["media"])
 
 @router.get("/{path:path}")
 def media(path: str):
-    base = os.path.abspath(CAPTURED_DIR)
+    base = os.path.abspath(IMAGES_DIR)
     if not os.path.exists(base):
-        raise HTTPException(status_code=404, detail="captured_images folder not found")
+        raise HTTPException(status_code=404, detail="images folder not found")
 
     decoded = urllib.parse.unquote(path).replace("/", os.sep)
     full = os.path.abspath(os.path.join(base, decoded))

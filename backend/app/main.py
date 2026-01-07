@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import ensure_dirs, BASE_URL
-from app.routes.camera import router as camera_router, alias_router as camera_alias_router
+from app.routes.camera import router as camera_router, legacy_router as camera_legacy_router
 from app.routes.training import router as training_router
 from app.routes.attendance import router as attendance_router
 from app.routes.media import router as media_router
@@ -17,7 +17,7 @@ app.add_middleware(
 )
 
 app.include_router(camera_router)
-app.include_router(camera_alias_router)
+app.include_router(camera_legacy_router)
 app.include_router(training_router)
 app.include_router(attendance_router)
 app.include_router(media_router)
@@ -30,8 +30,12 @@ def root():
         "model": "YOLOv5-Face + ArcFace + ByteTrack",
         "notes": [
             "Train first: POST /train",
-            "Start camera: POST /camera/start",
-            "Stream: GET /camera/stream/{camera_id}",
-            "Media: /media/<relative_path_inside_captured_images>"
+            "Start camera: POST /cameras/start",
+            "Stream: GET /cameras/stream/{camera_id}",
+            "Media: /media/<relative_path_inside_images>"
         ]
     }
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}

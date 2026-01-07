@@ -1,11 +1,10 @@
 import os
 import urllib.parse
-from app.core.config import BASE_URL, CAPTURED_DIR
+from app.core.config import BASE_URL, IMAGES_DIR
 from app.integrations.google_api import google_api
 
 def build_media_url(abs_path: str) -> str:
-    # abs_path is something like data/captured_images/known/Akash/...
-    rel = os.path.relpath(abs_path, CAPTURED_DIR).replace(os.sep, "/")
+    rel = os.path.relpath(abs_path, IMAGES_DIR).replace(os.sep, "/")
     enc = urllib.parse.quote(rel)
     return f"{BASE_URL}/media/{enc}"
 

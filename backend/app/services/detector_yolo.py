@@ -1,8 +1,11 @@
 import numpy as np
-from ultralytics import YOLO
 
 class YoloFaceDetector:
     def __init__(self, model_path: str = "yolov5-face.pt"):
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError("ultralytics is required to start a camera session") from exc
         self.model = YOLO(model_path)
 
     def detect(self, frame_bgr: np.ndarray, conf: float = 0.45):

@@ -1,19 +1,22 @@
 import json
 import os
+import re
+from pathlib import Path
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
-DEFAULT_PERSON_IMAGES_DIR = os.path.join(DATA_DIR, "person_images")
-LEGACY_PERSON_IMAGES_DIR = os.path.join(BASE_DIR, "Image Data", "Person Images")
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
+DEFAULT_PERSON_IMAGES_DIR = DATA_DIR / "person_images"
+LEGACY_PERSON_IMAGES_DIR = BASE_DIR / "Image Data" / "Person Images"
 PERSON_IMAGES_DIR = LEGACY_PERSON_IMAGES_DIR if os.path.isdir(LEGACY_PERSON_IMAGES_DIR) else DEFAULT_PERSON_IMAGES_DIR
-EMBEDDINGS_DIR = os.path.join(DATA_DIR, "embeddings")
-PROTOTYPES_PATH = os.path.join(EMBEDDINGS_DIR, "prototypes.pkl")
+EMBEDDINGS_DIR = DATA_DIR / "embeddings"
+PROTOTYPES_PATH = EMBEDDINGS_DIR / "prototypes.pkl"
 
-CAPTURED_DIR = os.path.join(DATA_DIR, "captured_images")
-CAPTURED_KNOWN_DIR = os.path.join(CAPTURED_DIR, "known")
-CAPTURED_UNKNOWN_DIR = os.path.join(CAPTURED_DIR, "unknown")
+IMAGES_DIR = DATA_DIR / "images"
+CAPTURED_DIR = IMAGES_DIR
+CAPTURED_KNOWN_DIR = CAPTURED_DIR / "known"
+CAPTURED_UNKNOWN_DIR = CAPTURED_DIR / "unknown"
 
-VIDEOS_DIR = os.path.join(DATA_DIR, "videos")
+VIDEOS_DIR = DATA_DIR / "videos"
 
 # Public URL for clickable links (must be server IP, not localhost)
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
@@ -47,9 +50,15 @@ def load_runtime_config() -> dict:
 
 RUNTIME = load_runtime_config()
 
+def sanitize_camera_name(name: str) -> str:
+    cleaned = re.sub(r"[^\w]+", "_", name.strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "camera"
+
 def ensure_dirs():
     os.makedirs(PERSON_IMAGES_DIR, exist_ok=True)
     os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
     os.makedirs(CAPTURED_KNOWN_DIR, exist_ok=True)
     os.makedirs(CAPTURED_UNKNOWN_DIR, exist_ok=True)
     os.makedirs(VIDEOS_DIR, exist_ok=True)
+    os.makedirs(IMAGES_DIR, exist_ok=True)

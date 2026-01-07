@@ -1,9 +1,12 @@
 import cv2
 import numpy as np
-from insightface.app import FaceAnalysis
 
 class ArcFaceEmbedder:
     def __init__(self):
+        try:
+            from insightface.app import FaceAnalysis
+        except ImportError as exc:
+            raise RuntimeError("insightface is required to start a camera session") from exc
         self.app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
         self.app.prepare(ctx_id=0, det_size=(640, 640))
 
