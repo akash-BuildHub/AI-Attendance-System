@@ -17,6 +17,8 @@ CAPTURED_KNOWN_DIR = CAPTURED_DIR / "known"
 CAPTURED_UNKNOWN_DIR = CAPTURED_DIR / "unknown"
 
 VIDEOS_DIR = DATA_DIR / "videos"
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Public URL for clickable links (must be server IP, not localhost)
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")

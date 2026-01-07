@@ -9,6 +9,7 @@ from app.services.session_manager import manager
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 legacy_router = APIRouter(prefix="/camera", tags=["camera-legacy"])
+compat_router = APIRouter(tags=["camera-compat"])
 
 async def _check_camera(rtsp_url: str) -> bool:
     def _capture():
@@ -32,6 +33,18 @@ async def test_camera(payload: dict):
     if not ok:
         return {"success": False, "message": "Unable to connect to camera"}
     return {"success": True, "message": "Connected successfully"}
+
+@compat_router.post("/test-camera")
+async def test_camera_compat(payload: dict):
+    rtsp_url = payload.get("rtsp_url") or payload.get("rtspUrl")
+    camera_name = payload.get("camera_name") or payload.get("cameraName")
+    if not rtsp_url:
+        raise HTTPException(status_code=400, detail="rtsp_url required")
+    auto_start = payload.get("autoStart", True)
+    if not auto_start:
+        return await test_camera({"rtspUrl": rtsp_url})
+    camera_id = int(payload.get("camera_id") or payload.get("cameraId") or 0)
+    return await start_camera({"cameraId": camera_id, "cameraName": camera_name, "rtspUrl": rtsp_url})
 
 @router.get("")
 async def list_cameras():

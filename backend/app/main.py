@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import ensure_dirs, BASE_URL
-from app.routes.camera import router as camera_router, legacy_router as camera_legacy_router
+from app.routes.camera import router as camera_router, legacy_router as camera_legacy_router, compat_router as camera_compat_router
 from app.routes.training import router as training_router
 from app.routes.attendance import router as attendance_router
 from app.routes.media import router as media_router
@@ -18,6 +18,7 @@ app.add_middleware(
 
 app.include_router(camera_router)
 app.include_router(camera_legacy_router)
+app.include_router(camera_compat_router)
 app.include_router(training_router)
 app.include_router(attendance_router)
 app.include_router(media_router)
