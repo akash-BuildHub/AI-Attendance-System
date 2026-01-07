@@ -66,4 +66,8 @@ class CameraStream:
                 self.cap.release()
         except:
             pass
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
         self.cap = None
+        self.latest_frame = None
+        self.thread = None

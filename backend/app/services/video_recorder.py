@@ -1,7 +1,7 @@
 import os
 import cv2
 from datetime import datetime
-from app.core.config import VIDEOS_DIR
+from app.core.config import VIDEOS_DIR, sanitize_camera_name
 
 class VideoRecorder:
     def __init__(self):
@@ -9,10 +9,11 @@ class VideoRecorder:
         self.path = None
 
     def start(self, first_frame, camera_name: str, fps: int = 20):
-        os.makedirs(VIDEOS_DIR, exist_ok=True)
+        safe = sanitize_camera_name(camera_name)
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        safe = camera_name.replace("/", "_").replace("\\", "_").strip() or "Camera"
-        self.path = os.path.join(VIDEOS_DIR, f"{safe}_{ts}.mp4")
+        camera_dir = os.path.join(VIDEOS_DIR, safe)
+        os.makedirs(camera_dir, exist_ok=True)
+        self.path = os.path.join(camera_dir, f"{safe}_{ts}.mp4")
 
         h, w = first_frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")

@@ -1,8 +1,11 @@
 import json
 import os
 
-DATA_DIR = "data"
-PERSON_IMAGES_DIR = os.path.join(DATA_DIR, "person_images")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+DEFAULT_PERSON_IMAGES_DIR = os.path.join(DATA_DIR, "person_images")
+LEGACY_PERSON_IMAGES_DIR = os.path.join(BASE_DIR, "Image Data", "Person Images")
+PERSON_IMAGES_DIR = LEGACY_PERSON_IMAGES_DIR if os.path.isdir(LEGACY_PERSON_IMAGES_DIR) else DEFAULT_PERSON_IMAGES_DIR
 EMBEDDINGS_DIR = os.path.join(DATA_DIR, "embeddings")
 PROTOTYPES_PATH = os.path.join(EMBEDDINGS_DIR, "prototypes.pkl")
 

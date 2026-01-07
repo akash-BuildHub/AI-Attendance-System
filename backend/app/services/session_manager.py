@@ -36,6 +36,8 @@ class SessionManager:
     def start(self, camera_id: int, camera_name: str, rtsp_url: str):
         # Load prototypes (trained embeddings)
         prototypes = load_prototypes()
+        if camera_id in self.sessions:
+            self.stop(camera_id)
 
         sess = CameraSession(
             camera_id=camera_id,
