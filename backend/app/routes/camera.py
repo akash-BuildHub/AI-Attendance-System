@@ -5,11 +5,23 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from app.services.session_manager import manager
+from app.core.state import state
+from app.services import session_manager as session_manager_module
+
+if state.session_manager is None:
+    state.session_manager = session_manager_module.manager
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 legacy_router = APIRouter(prefix="/camera", tags=["camera-legacy"])
 compat_router = APIRouter(tags=["camera-compat"])
+feed_router = APIRouter(tags=["camera-legacy-feed"])
+
+def _parse_camera_id(value) -> int:
+    try:
+        camera_id = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="cameraId must be an integer")
+    return camera_id
 
 async def _check_camera(rtsp_url: str) -> bool:
     def _capture():
@@ -37,18 +49,13 @@ async def test_camera(payload: dict):
 @compat_router.post("/test-camera")
 async def test_camera_compat(payload: dict):
     rtsp_url = payload.get("rtsp_url") or payload.get("rtspUrl")
-    camera_name = payload.get("camera_name") or payload.get("cameraName")
     if not rtsp_url:
         raise HTTPException(status_code=400, detail="rtsp_url required")
-    auto_start = payload.get("autoStart", True)
-    if not auto_start:
-        return await test_camera({"rtspUrl": rtsp_url})
-    camera_id = int(payload.get("camera_id") or payload.get("cameraId") or 0)
-    return await start_camera({"cameraId": camera_id, "cameraName": camera_name, "rtspUrl": rtsp_url})
+    return await test_camera({"rtspUrl": rtsp_url})
 
 @router.get("")
 async def list_cameras():
-    return {"success": True, "data": manager.list_cameras()}
+    return {"success": True, "data": state.session_manager.list_cameras()}
 
 @router.post("")
 async def create_camera(payload: dict):
@@ -56,39 +63,84 @@ async def create_camera(payload: dict):
 
 @router.post("/start")
 async def start_camera(payload: dict):
-    camera_id = int(payload.get("cameraId", 0))
+    camera_id = _parse_camera_id(payload.get("cameraId", 0))
     camera_name = (payload.get("cameraName") or f"Camera_{camera_id}").strip()
     rtsp_url = payload.get("rtspUrl", "")
     if not rtsp_url:
         raise HTTPException(status_code=400, detail="rtspUrl required")
 
     rtsp_url = urllib.parse.unquote(rtsp_url)
-    sess = await run_in_threadpool(manager.start_camera, camera_id, camera_name, rtsp_url)
+<<<<<<< ours
+<<<<<<< ours
+    try:
+        sess = await run_in_threadpool(manager.start_camera, camera_id, camera_name, rtsp_url)
+    except RuntimeError as exc:
+        return {"success": False, "message": str(exc)}
+=======
+    sess = await run_in_threadpool(state.session_manager.start_camera, camera_id, camera_name, rtsp_url)
+>>>>>>> theirs
+=======
+    sess = await run_in_threadpool(state.session_manager.start_camera, camera_id, camera_name, rtsp_url)
+>>>>>>> theirs
     return {"success": True, "message": "started", "data": {"cameraId": camera_id, "cameraName": sess.camera_name}}
 
 @router.post("/stop")
 async def stop_camera(payload: dict):
-    camera_id = int(payload.get("cameraId", 0))
+<<<<<<< ours
+<<<<<<< ours
+    camera_id = _parse_camera_id(payload.get("cameraId", 0))
     vp = await run_in_threadpool(manager.stop_camera, camera_id)
+=======
+    camera_id = int(payload.get("cameraId", 0))
+    vp = await run_in_threadpool(state.session_manager.stop_camera, camera_id)
+>>>>>>> theirs
+=======
+    camera_id = int(payload.get("cameraId", 0))
+    vp = await run_in_threadpool(state.session_manager.stop_camera, camera_id)
+>>>>>>> theirs
     return {"success": True, "message": "stopped", "video_path": vp}
 
 @router.post("/resume")
 async def resume_camera(payload: dict):
+<<<<<<< ours
+    camera_id = _parse_camera_id(payload.get("cameraId", 0))
+    try:
+        sess = await run_in_threadpool(manager.resume_camera, camera_id)
+    except RuntimeError as exc:
+        return {"success": False, "message": str(exc)}
+=======
     camera_id = int(payload.get("cameraId", 0))
-    sess = await run_in_threadpool(manager.resume_camera, camera_id)
+    sess = await run_in_threadpool(state.session_manager.resume_camera, camera_id)
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
     if not sess:
         raise HTTPException(status_code=404, detail="camera not found")
     return {"success": True, "message": "resumed", "data": {"cameraId": camera_id, "cameraName": sess.camera_name}}
 
 @router.get("/stream/{camera_id}")
 def stream(camera_id: int):
-    sess = manager.get(camera_id)
+<<<<<<< ours
+<<<<<<< ours
+    camera_id = _parse_camera_id(camera_id)
+    if not manager.get(camera_id):
+        raise HTTPException(status_code=404, detail="camera not running")
+
+    return StreamingResponse(
+        manager.frame_generator(camera_id),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+=======
+=======
+>>>>>>> theirs
+    sess = state.session_manager.get(camera_id)
     if not sess:
         raise HTTPException(status_code=404, detail="camera not running")
 
     def gen():
         while True:
-            current = manager.get(camera_id)
+            current = state.session_manager.get(camera_id)
             if not current or not current.running:
                 break
 
@@ -104,6 +156,7 @@ def stream(camera_id: int):
             yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+>>>>>>> theirs
 
 @router.get("/preview-stream")
 def preview_stream(rtspUrl: str):
@@ -151,6 +204,10 @@ async def resume_camera_alias(payload: dict):
 def stream_alias(camera_id: int):
     return stream(camera_id)
 
+@compat_router.get("/stream/{camera_id}")
+def stream_compat(camera_id: int):
+    return stream(camera_id)
+
 @legacy_router.post("/start-feed")
 async def start_feed(payload: dict):
     return await start_camera(payload)
@@ -158,3 +215,31 @@ async def start_feed(payload: dict):
 @legacy_router.post("/stop-feed")
 async def stop_feed(payload: dict):
     return await stop_camera(payload)
+
+<<<<<<< ours
+<<<<<<< ours
+@feed_router.post("/start-feed")
+async def start_feed_root(payload: dict):
+    return await start_camera(payload)
+
+@feed_router.post("/stop-feed")
+async def stop_feed_root(payload: dict):
+    return await stop_camera(payload)
+
+@feed_router.get("/stream/{camera_id}")
+def stream_root(camera_id: int):
+    return stream(camera_id)
+=======
+=======
+>>>>>>> theirs
+@compat_router.post("/start-feed")
+async def start_feed_compat(payload: dict):
+    return await start_camera(payload)
+
+@compat_router.post("/stop-feed")
+async def stop_feed_compat(payload: dict):
+    return await stop_camera(payload)
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs

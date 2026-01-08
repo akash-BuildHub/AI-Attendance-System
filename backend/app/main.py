@@ -3,14 +3,22 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import ensure_dirs, BASE_URL
-from app.routes.camera import router as camera_router, legacy_router as camera_legacy_router, compat_router as camera_compat_router
+from app.routes.camera import (
+    router as camera_router,
+    legacy_router as camera_legacy_router,
+    compat_router as camera_compat_router,
+    feed_router as camera_feed_router,
+)
 from app.routes.training import router as training_router
 from app.routes.attendance import router as attendance_router
 from app.routes.media import router as media_router
+from app.core.state import state
+from app.services.session_manager import manager as session_manager
 
 ensure_dirs()
 
 app = FastAPI(title="Grow AI - YOLOv5Face + ArcFace + ByteTrack")
+state.session_manager = session_manager
 
 cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
 cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
@@ -26,6 +34,7 @@ app.add_middleware(
 app.include_router(camera_router)
 app.include_router(camera_legacy_router)
 app.include_router(camera_compat_router)
+app.include_router(camera_feed_router)
 app.include_router(training_router)
 app.include_router(attendance_router)
 app.include_router(media_router)

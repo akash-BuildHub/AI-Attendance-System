@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from app.core.config import RUNTIME
+from app.core.state import state
 from app.services.camera_stream import CameraStream
 from app.services.video_recorder import VideoRecorder
 from app.services.detector_yolo import YoloFaceDetector
@@ -43,6 +44,17 @@ class CameraSession:
     last_frame_time: float = 0.0
     stream_restarts: int = 0
 
+    def frame_generator(self):
+        while self.running and not self.stop_event.is_set():
+            frame = self.latest_annotated or self.latest_frame
+            if frame is None:
+                time.sleep(0.03)
+                continue
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                continue
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
+
 class CameraSessionManager:
     def __init__(self):
         self.sessions: Dict[int, CameraSession] = {}
@@ -50,11 +62,26 @@ class CameraSessionManager:
         self.frame_timeout_sec = 5.0
         self.max_stream_restarts = 3
 
+    def _require_camera_id(self, camera_id: int) -> int:
+        try:
+            camera_id = int(camera_id)
+        except (TypeError, ValueError):
+            raise RuntimeError("cameraId must be an integer")
+        return camera_id
+
     def start_camera(self, camera_id: int, camera_name: str, rtsp_url: str) -> CameraSession:
+        camera_id = self._require_camera_id(camera_id)
         with self.lock:
             existing = self.sessions.get(camera_id)
             if existing:
-                self._stop_session(existing, remove=False)
+                if existing.running:
+                    return existing
+                existing.camera_name = camera_name
+                if rtsp_url:
+                    existing.rtsp_url = rtsp_url
+                self._reset_session(existing)
+                self._start_session(existing)
+                return existing
 
             session = self._create_session(camera_id, camera_name, rtsp_url)
             self.sessions[camera_id] = session
@@ -62,6 +89,7 @@ class CameraSessionManager:
             return session
 
     def stop_camera(self, camera_id: int) -> Optional[str]:
+        camera_id = self._require_camera_id(camera_id)
         with self.lock:
             sess = self.sessions.get(camera_id)
             if not sess:
@@ -70,32 +98,29 @@ class CameraSessionManager:
             return path
 
     def resume_camera(self, camera_id: int) -> Optional[CameraSession]:
+        camera_id = self._require_camera_id(camera_id)
         with self.lock:
             sess = self.sessions.get(camera_id)
             if not sess:
                 return None
             if sess.running:
                 return sess
-            sess.stream = CameraStream(sess.rtsp_url)
-            sess.recorder = VideoRecorder()
-            sess.detector = YoloFaceDetector()
-            sess.embedder = ArcFaceEmbedder()
-            sess.tracker = ByteTrackerService()
-            sess.prototypes = load_prototypes()
-            sess.last_capture_by_track.clear()
-            sess.last_label_by_track.clear()
-            sess.last_label_time_by_track.clear()
-            sess.logged_labels.clear()
-            sess.latest_annotated = None
-            sess.latest_frame = None
-            sess.stop_event.clear()
-            sess.last_frame_time = 0.0
-            sess.stream_restarts = 0
+            self._reset_session(sess)
             self._start_session(sess)
             return sess
 
     def get(self, camera_id: int) -> Optional[CameraSession]:
+        try:
+            camera_id = self._require_camera_id(camera_id)
+        except RuntimeError:
+            return None
         return self.sessions.get(camera_id)
+
+    def frame_generator(self, camera_id: int):
+        sess = self.get(camera_id)
+        if not sess:
+            return iter(())
+        return sess.frame_generator()
 
     def list_cameras(self):
         return [
@@ -122,6 +147,23 @@ class CameraSessionManager:
             prototypes=prototypes,
             running=False,
         )
+
+    def _reset_session(self, session: CameraSession) -> None:
+        session.stream = CameraStream(session.rtsp_url)
+        session.recorder = VideoRecorder()
+        session.detector = YoloFaceDetector()
+        session.embedder = ArcFaceEmbedder()
+        session.tracker = ByteTrackerService()
+        session.prototypes = load_prototypes()
+        session.last_capture_by_track.clear()
+        session.last_label_by_track.clear()
+        session.last_label_time_by_track.clear()
+        session.logged_labels.clear()
+        session.latest_annotated = None
+        session.latest_frame = None
+        session.stop_event.clear()
+        session.last_frame_time = 0.0
+        session.stream_restarts = 0
 
     def _start_session(self, session: CameraSession):
         if session.running:
@@ -268,4 +310,17 @@ class CameraSessionManager:
             except Exception:
                 logger.exception("Failed stopping recorder on exit")
 
-manager = CameraSessionManager()
+<<<<<<< ours
+<<<<<<< ours
+if state.session_manager is None:
+    state.session_manager = CameraSessionManager()
+
+manager = state.session_manager
+=======
+manager = state.session_manager or CameraSessionManager()
+state.session_manager = manager
+>>>>>>> theirs
+=======
+manager = state.session_manager or CameraSessionManager()
+state.session_manager = manager
+>>>>>>> theirs
