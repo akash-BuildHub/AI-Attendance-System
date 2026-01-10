@@ -1,66 +1,61 @@
-import json
-import os
-import re
+import json, os, re
 from pathlib import Path
 
+# Fix: Use correct parent directory navigation
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
-DEFAULT_PERSON_IMAGES_DIR = DATA_DIR / "person_images"
-LEGACY_PERSON_IMAGES_DIR = BASE_DIR / "Image Data" / "Person Images"
-PERSON_IMAGES_DIR = LEGACY_PERSON_IMAGES_DIR if os.path.isdir(LEGACY_PERSON_IMAGES_DIR) else DEFAULT_PERSON_IMAGES_DIR
+DATA_DIR = BASE_DIR / "data"
+
+PERSON_IMAGES_DIR = DATA_DIR / "person_images"
 EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 PROTOTYPES_PATH = EMBEDDINGS_DIR / "prototypes.pkl"
 
-IMAGES_DIR = DATA_DIR / "images"
-CAPTURED_DIR = IMAGES_DIR
+CAPTURED_DIR = DATA_DIR / "captured_images"
 CAPTURED_KNOWN_DIR = CAPTURED_DIR / "known"
 CAPTURED_UNKNOWN_DIR = CAPTURED_DIR / "unknown"
 
+# Required by media / attendance
+IMAGES_DIR = CAPTURED_DIR
+
 VIDEOS_DIR = DATA_DIR / "videos"
-IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Public URL for clickable links (must be server IP, not localhost)
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+# Create all necessary directories
+for d in [
+    PERSON_IMAGES_DIR, EMBEDDINGS_DIR,
+    CAPTURED_KNOWN_DIR, CAPTURED_UNKNOWN_DIR,
+    VIDEOS_DIR
+]:
+    d.mkdir(parents=True, exist_ok=True)
 
-# Default settings (overridden by optimal_config.json if present)
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+
 DEFAULTS = {
-    "cosine_threshold": 0.48,          # ArcFace cosine similarity threshold
-    "min_face_size": 70,               # reject tiny faces
-    "min_det_conf": 0.45,              # YOLO det confidence
-    "capture_cooldown_sec": 8,         # per-track capture cooldown
-    "stream_fps": 15,                  # MJPEG output
-    "record_fps": 20
+    "cosine_threshold": 0.48,
+    "min_face_size": 70,
+    "min_det_conf": 0.45,
+    "capture_cooldown_sec": 8,
+    "stream_fps": 15,
+    "record_fps": 20,
 }
 
-def load_runtime_config() -> dict:
+def load_runtime_config():
+    """Load runtime configuration from optimal_config.json if available"""
     cfg = DEFAULTS.copy()
-    if os.path.exists("optimal_config.json"):
+    path = BASE_DIR / "optimal_config.json"
+    if path.exists():
         try:
-            with open("optimal_config.json", "r") as f:
+            with open(path) as f:
                 raw = json.load(f)
-            # keep your old keys if present
-            if "tolerance" in raw:
-                cfg["cosine_threshold"] = float(raw["tolerance"])
-            if "min_face_size" in raw:
-                cfg["min_face_size"] = int(raw["min_face_size"])
-            if "min_detection_confidence" in raw:
-                cfg["min_det_conf"] = float(raw["min_detection_confidence"])
-        except Exception:
-            pass
+            cfg.update({
+                "cosine_threshold": raw.get("tolerance", cfg["cosine_threshold"]),
+                "min_face_size": raw.get("min_face_size", cfg["min_face_size"]),
+                "min_det_conf": raw.get("min_detection_confidence", cfg["min_det_conf"]),
+            })
+        except Exception as e:
+            print(f"⚠️ Error loading optimal_config.json: {e}")
     return cfg
 
 RUNTIME = load_runtime_config()
 
 def sanitize_camera_name(name: str) -> str:
-    cleaned = re.sub(r"[^\w]+", "_", name.strip())
-    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
-    return cleaned or "camera"
-
-def ensure_dirs():
-    os.makedirs(PERSON_IMAGES_DIR, exist_ok=True)
-    os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
-    os.makedirs(CAPTURED_KNOWN_DIR, exist_ok=True)
-    os.makedirs(CAPTURED_UNKNOWN_DIR, exist_ok=True)
-    os.makedirs(VIDEOS_DIR, exist_ok=True)
-    os.makedirs(IMAGES_DIR, exist_ok=True)
+    """Sanitize camera name to be filesystem-safe"""
+    return re.sub(r"[^\w]+", "_", name).strip("_") or "camera"

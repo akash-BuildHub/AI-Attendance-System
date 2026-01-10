@@ -1,18 +1,15 @@
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from threading import Lock
 
-@dataclass
-class CameraMeta:
-    camera_id: int
-    camera_name: str
-    rtsp_url: str
-    running: bool = False
-
-@dataclass
 class AppState:
-    session_manager: Optional[Any] = None
-    detector: Optional[Any] = None
-    embedder: Optional[Any] = None
-    config_cache: Dict[str, Any] = field(default_factory=dict)
+    def __init__(self):
+        self.camera_running = False
+        self.current_camera_name = None
+        self.camera_lock = Lock()
 
-state = AppState()
+        self.face_detection_enabled = True
+        self.attendance_tracking = True
+
+        self.session_manager = None
+
+app_state = AppState()
+state = app_state

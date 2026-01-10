@@ -310,17 +310,8 @@ class CameraSessionManager:
             except Exception:
                 logger.exception("Failed stopping recorder on exit")
 
-<<<<<<< ours
-<<<<<<< ours
+# ✅ SINGLE INSTANCE - NO MERGE CONFLICTS
 if state.session_manager is None:
     state.session_manager = CameraSessionManager()
 
 manager = state.session_manager
-=======
-manager = state.session_manager or CameraSessionManager()
-state.session_manager = manager
->>>>>>> theirs
-=======
-manager = state.session_manager or CameraSessionManager()
-state.session_manager = manager
->>>>>>> theirs

@@ -7,7 +7,8 @@ import CameraList from "./components/CameraList";
 import VideoPreview from "./components/VideoPreview";
 import "./App.css";
 
-const API_BASE = "http://localhost:8000";
+// ✅ FIX #1: Use environment variable instead of hard-coded URL
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8000";
 
 // Create a separate component for the authenticated app
 const AuthenticatedApp = () => {
@@ -95,7 +96,7 @@ const AuthenticatedApp = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cameraId: camera.id,
-          cameraName: safeCameraName, // ✅ CRITICAL: Added camera name
+          cameraName: safeCameraName,
           rtspUrl: camera.rtspUrl,
         }),
       });
@@ -188,7 +189,7 @@ const AuthenticatedApp = () => {
     }
   };
 
-  // New function to handle test success
+  // ✅ FIX #2: Accept streamId from backend and use it
   const handleTestSuccess = async (cameraConfig, streamId) => {
     try {
       // ✅ Sanitize camera name for file system and Drive
@@ -208,11 +209,11 @@ const AuthenticatedApp = () => {
         });
       }
 
-      // Save camera config that passed validation
+      // ✅ CRITICAL: Use streamId from backend, not Date.now()
       const tempCamera = {
         ...sanitizedConfig,
-        id: streamId || Date.now(),
-        isLive: true, // ✅ IMPORTANT: Mark as live for consistent state
+        id: streamId, // ✅ Must match backend stream ID
+        isLive: true,
       };
       
       setPreviewCamera(tempCamera);

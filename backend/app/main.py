@@ -1,58 +1,79 @@
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import ensure_dirs, BASE_URL
-from app.routes.camera import (
-    router as camera_router,
-    legacy_router as camera_legacy_router,
-    compat_router as camera_compat_router,
-    feed_router as camera_feed_router,
+# Create FastAPI app
+app = FastAPI(
+    title="Grow AI Backend",
+    description="AI-powered CCTV Attendance System",
+    version="1.0.0"
 )
-from app.routes.training import router as training_router
-from app.routes.attendance import router as attendance_router
-from app.routes.media import router as media_router
-from app.core.state import state
-from app.services.session_manager import manager as session_manager
 
-ensure_dirs()
-
-app = FastAPI(title="Grow AI - YOLOv5Face + ArcFace + ByteTrack")
-state.session_manager = session_manager
-
-cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
-cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
-
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=["*"],  # In production, specify exact origins
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
-app.include_router(camera_router)
-app.include_router(camera_legacy_router)
-app.include_router(camera_compat_router)
-app.include_router(camera_feed_router)
-app.include_router(training_router)
-app.include_router(attendance_router)
-app.include_router(media_router)
+# Import routers
+from app.routes import camera, attendance, media, stream, training
+
+# Register routers
+app.include_router(camera.router)
+app.include_router(stream.router)
+app.include_router(attendance.router)
+app.include_router(media.router)
+app.include_router(training.router)
+
 
 @app.get("/")
 def root():
+    """Health check endpoint"""
     return {
-        "status": "online",
-        "base_url": BASE_URL,
-        "model": "YOLOv5-Face + ArcFace + ByteTrack",
-        "notes": [
-            "Train first: POST /train",
-            "Start camera: POST /cameras/start",
-            "Stream: GET /cameras/stream/{camera_id}",
-            "Media: /media/<relative_path_inside_images>"
-        ]
+        "status": "ok", 
+        "message": "Grow AI Backend running",
+        "version": "1.0.0"
     }
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Detailed health check"""
+    from app.integrations.google_api import google_api
+    
+    return {
+        "status": "healthy",
+        "services": {
+            "api": "running",
+            "google_sheets": google_api.is_authenticated()
+        }
+    }
+
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    print("🚀 Starting Grow AI Backend...")
+    print("📡 API available at: http://localhost:8000")
+    print("📚 Docs available at: http://localhost:8000/docs")
+    
+    # Initialize Google Sheets connection
+    from app.integrations.google_api import google_api
+    google_api.authenticate()
+
+
+# Shutdown event
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    print("🛑 Shutting down Grow AI Backend...")
+    from app.services.session_manager import manager
+    
+    # Stop all running cameras
+    for camera_id in list(manager.sessions.keys()):
+        manager.stop_camera(camera_id)
+    
+    print("✅ All cameras stopped")

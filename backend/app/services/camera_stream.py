@@ -1,73 +1,55 @@
 import cv2
-import time
-import threading
-import numpy as np
-from typing import Optional
+from app.core.state import app_state
 
-# Better RTSP stability
-import os
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|stimeout;5000000|rw_timeout;5000005"
-)
 
 class CameraStream:
-    def __init__(self, rtsp_url: str):
-        self.rtsp_url = rtsp_url
+    """
+    Supports:
+    - Webcam (0, 1, ...)
+    - RTSP streams (rtsp://user:pass@ip:554/...)
+    """
+
+    def __init__(self, source=0):
+        self.source = source
         self.cap = None
         self.running = False
-        self.lock = threading.Lock()
-        self.latest_frame: Optional[np.ndarray] = None
-        self.thread: Optional[threading.Thread] = None
 
     def start(self):
-        if self.running:
-            return
-        self.running = True
-        self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-        try:
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
-        except:
-            pass
-        self.thread = threading.Thread(target=self._loop, daemon=True)
-        self.thread.start()
+        with app_state.camera_lock:
+            if self.running:
+                return
 
-    def _loop(self):
-        if not self.cap or not self.cap.isOpened():
-            self.running = False
-            return
+            if isinstance(self.source, str) and self.source.startswith("rtsp"):
+                self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+            else:
+                self.cap = cv2.VideoCapture(self.source)
 
-        # drop initial buffer
-        for _ in range(8):
-            self.cap.grab()
+            if not self.cap or not self.cap.isOpened():
+                self.cap = None
+                raise RuntimeError(f"Cannot open camera source: {self.source}")
 
-        while self.running:
-            if not self.cap.grab():
-                time.sleep(0.02)
-                continue
-            ok, frame = self.cap.retrieve()
-            if not ok or frame is None:
-                time.sleep(0.02)
-                continue
-            with self.lock:
-                self.latest_frame = frame
-            time.sleep(0.001)
+            try:
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
 
-    def read(self) -> Optional[np.ndarray]:
-        with self.lock:
-            if self.latest_frame is None:
-                return None
-            return self.latest_frame.copy()
+            self.running = True
+            app_state.camera_running = True
+
+    def read(self):
+        if not self.running or not self.cap:
+            return None
+
+        ok, frame = self.cap.read()
+        if not ok:
+            return None
+        return frame
 
     def stop(self):
-        self.running = False
-        try:
+        with app_state.camera_lock:
+            self.running = False
+            app_state.camera_running = False
+
             if self.cap:
                 self.cap.release()
-        except:
-            pass
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        self.cap = None
-        self.latest_frame = None
-        self.thread = None
+                self.cap = None
